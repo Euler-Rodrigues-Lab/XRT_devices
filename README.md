@@ -1,18 +1,36 @@
-# XRT devices
+# XRT Devices
 
-Python input devices for XRT headsets and MediaPipe cameras. No robot SDK,
-private solver, Torch, or original project checkout is required. This first
-release transfers human-pose processing and CSV playback; Rust is deferred.
+Python input devices for XR (WebRTC) headsets and MediaPipe camera tracking. This package provides lightweight, robot-agnostic interfaces for real-time human pose streaming, bone processing, and CSV recording/playback.
+
+- **Prior Work & Teleop System**: [XR-Robot-Teleop Project Page](https://xr-robot-teleop-website.pages.dev/)
+- **SEW-Mimic Theory & Retargeting**: [SEW-Mimic Website](https://sew-mimic.com/) | [arXiv:2602.01632](https://arxiv.org/abs/2602.01632)
+
+---
+
+## Overview
+
+- **Headset Teleoperation**: Real-time WebRTC receiver for Meta Quest / OpenXR body and hand tracking via [XRT-Client](https://github.com/yunho-c/XRT-Client).
+- **Camera Teleoperation**: MediaPipe Tasks integration for webcam-based upper-body and hand tracking without specialized VR hardware.
+- **Recording & Playback**: High-throughput background CSV recording and deterministic offline playback.
+- **Process Isolation**: Zero-copy shared-memory isolation preventing slow consumer or solver loops from causing network lag or frame accumulation.
+- **Keypoint Visualization**: For detailed keypoint definitions, hierarchy, and coordinate axes, see the interactive [Rerun replay visualization](https://xr-robot-teleop-website.pages.dev/).
+- **Geometric Frame Definitions**: For the mathematical formulation of Shoulder-Elbow-Wrist (SEW) frames, orientation alignment, and closed-form retargeting, see the [SEW-Mimic paper](#citation) and [sew-mimic.com](https://sew-mimic.com/).
+
+---
 
 ## Install
 
 ```sh
+# Basic XR headset & CSV recording/playback support:
 python -m pip install -e '.[xr,recording]'
-# For camera input, additionally:
+
+# For MediaPipe camera input:
 python -m pip install -e '.[mediapipe]'
 ```
 
-## XRT headset
+---
+
+## XRT Headset
 
 ```python
 import time
@@ -26,42 +44,24 @@ with XRDevice(port=8080) as device:
         time.sleep(0.02)
 ```
 
-Connect [XRT-Client](https://github.com/yunho-c/XRT-Client) to this host, port 8080.
-Signaling is `POST /offer`. One headset per instance is supported. Client-created
-channels: `body_pose`, `apriltag_pose`, `unity_state`, `haptics`, `motor_stats`,
-`unity_cmds`. Feedback methods are `send_haptics`, `send_motor_stats`, and
-`send_unity_command`; drain UI events with `poll_unity_state`.
+Connect [XRT-Client](https://github.com/yunho-c/XRT-Client) to this host, port `8080`.
+Signaling is handled via `POST /offer`. One headset per instance is supported. Client-created WebRTC data channels include: `body_pose`, `apriltag_pose`, `unity_state`, `haptics`, `motor_stats`, and `unity_cmds`. Feedback methods include `send_haptics`, `send_motor_stats`, and `send_unity_command`; poll UI events with `poll_unity_state`.
 
-Construction does not open a server. `start()`/`start_control()` starts it;
-`close()`/`cleanup()` stops it. `XRRTCBodyPoseDevice` aliases `XRDevice`, but this is
-not a drop-in replacement for every study-specific legacy constructor or method.
-No robot commands are issued by this package.
+Construction does not automatically open the server. Use the context manager or call `start()` / `cleanup()`.
 
-### Robot-process isolation
+### Robot-Process Isolation
 
-The shared `XRDeviceAdapter` used by G1/RBY1 now starts WebRTC and pose conversion
-in a spawned process by default. A fixed-size shared-memory latest-snapshot slot
-replaces queued IPC, so a slow solver cannot accumulate historical input frames.
-`process_isolated=False` remains available for in-process embedding/tests. The
-isolated facade supports pose input and CSV recording; study feedback/event APIs
-still require direct `XRDevice` integration. Start adapters under a Python
-`if __name__ == "__main__":` guard, as both robot CLIs already do.
+The shared `XRDeviceAdapter` used by downstream robot repositories (e.g. G1, RB-Y1) starts WebRTC streaming and pose conversion in a spawned dedicated background process by default. A fixed-size shared-memory latest-snapshot slot replaces queued IPC, preventing slow solver or render cycles from accumulating historical input frames.
 
-Both live robot CLIs accept `--input_diagnostics`. Every five seconds this reports
-consumer read rate, receive age, input PID and dropped/invalid packet counters.
-Receive age starts at the server callback, not headset capture: it is not an
-end-to-end network latency measurement. Live headset performance still requires
-validation, particularly under sustained solver/render load.
+- Pass `process_isolated=False` for in-process embedding or debugging.
+- Start adapters under a Python `if __name__ == "__main__":` guard.
+- Pass `--input_diagnostics` in supported CLIs to monitor consumer read rate, receive age, input PID, and packet stats every 5 seconds.
 
-## MediaPipe camera
+---
 
-On first camera startup, omitted model paths automatically download Google's
-version-1 Pose Landmarker Lite and Hand Landmarker Tasks bundles. They are reused
-from `~/.cache/xrt_devices/models` (respects `XDG_CACHE_HOME`); override the cache
-with `XRT_DEVICES_MODEL_DIR`. No downloads occur on import or for XRT input.
-Pass `pose_model` and `hand_model` explicitly for custom models or offline setup.
-Explicit missing files fail instead of triggering a download. Interrupted or
-invalid downloads are not cached. Model files are not bundled in the package.
+## MediaPipe Camera
+
+On first camera startup, omitted model paths automatically download Google's Pose Landmarker Lite and Hand Landmarker Tasks bundles to `~/.cache/xrt_devices/models` (configurable via `XRT_DEVICES_MODEL_DIR`).
 
 ```python
 import time
@@ -75,13 +75,13 @@ with MediaPipeTeleopDevice(display=False) as device:
         time.sleep(0.02)
 ```
 
-The Tasks API runs pose and hands sequentially on the same image in one background
-worker (VIDEO tracking mode). Human landmark/wrist processing is transferred from
-the established Python device. `display=True` enables an OpenCV text/debug window;
-skeleton drawing is not yet implemented for Tasks results. Camera construction
-starts capture; use the context manager to release it.
+The Tasks API processes pose and hand landmarks sequentially in a dedicated worker thread (VIDEO tracking mode). Pass `display=True` for an OpenCV debug window.
 
-## CSV playback
+---
+
+## CSV Playback & Recording
+
+### Offline Playback
 
 ```python
 from xrt_devices.recording.csv_reader import CSVDataReader
@@ -92,12 +92,9 @@ bones, tags = reader.get_bones_and_tags_at_time(0.0)
 action = bones_to_action(bones, tags) if bones else None
 ```
 
-Supports `time_elapsed` and numeric `timestamp` columns, compressed CSV, bone rows,
-AprilTag rows and optional paper-board poses. Coordinates in existing recordings
-are already converted; they are not converted from Unity a second time.
+Supports `time_elapsed` and numeric `timestamp` columns, gzip-compressed CSV, bone rows, AprilTag rows, and board poses.
 
-For live bone recording, use `CSVRecorder` (exclusive file creation, bounded queue,
-drained on close). Recording runs outside the network callback:
+### Live Recording
 
 ```python
 from xrt_devices import XRDevice
@@ -105,44 +102,42 @@ from xrt_devices.recording.writer import CSVRecorder
 
 with CSVRecorder('capture.csv') as recorder:
     with XRDevice(recorder=recorder) as device:
-        # Run your application's polling loop here.
+        # Run polling loop here
         ...
 ```
 
-Inspect `recorder.dropped_frames` if recording throughput falls behind. This writer
-records processed bone frames, not every raw network arrival, action rows or tags.
+`CSVRecorder` runs file I/O on a background thread with bounded memory queues, logging `recorder.dropped_frames` if disk writes fall behind.
 
-## Frame contract and limitations
+---
 
-Both devices expose `get_frame() -> DeviceFrame | None`, with source, sequence,
-local monotonic receive time and the established action dictionary. XR frames use
-an 18-value SEW vector per arm (S/E/W followed by row-major 3x3 wrist rotation),
-finger dictionaries and available torso/head fields. MediaPipe exposes the same
-arm vector shape plus its existing tracking/hand fields; torso/head parity with
-XRT is not claimed. `get_controller_state()` provides legacy dictionaries.
+## Frame Contract & Coordinate Conventions
 
-Wire poses use Unity metres and xyzw quaternions; conversion is right-handed
-X-forward/Y-left/Z-up. A latest-value queue bounds XR backlog. Invalid/stale poses
-return no frame; controllers must implement their own engagement and hold policy.
-Operator events have a separate bounded queue. Feedback needs the client's channel
-to be open; this release does not acknowledge delivery. Do not equate connection
-state or pose visibility with permission to actuate hardware.
+- **Coordinate System**: Wire poses use Unity coordinate space (metres, xyzw quaternions) and are converted to right-handed standard robotics convention ($X$-forward, $Y$-left, $Z$-up).
+- **SEW Representation**: Both devices produce an 18-value SEW vector per arm ($S$, $E$, $W$ position coordinates followed by row-major $3 \times 3$ wrist rotation matrix), along with hand landmark dictionaries and torso/head poses where available.
+- **Integration**: The optional `xrt_devices.integrations.geo_kin` module provides shared adapters and typed frame conversion for `geo_kin_core`.
 
-The optional `xrt_devices.integrations.geo_kin` module provides shared XR/MediaPipe
-adapters, typed frame conversion and CSV/NPZ playback for G1 and RBY1. It needs
-`geo_kin_core` supplied by the robot package; the base device package does not import it.
+---
 
-Not yet migrated: study-specific process proxy, extended study recording, video/panorama,
-latency UI and study application entry points. G1 and RBY1 demos use this package;
-the study applications still await dependency updates. Headset/camera hardware validation
-is still required; offline tests cannot certify live interoperability.
+## Citation & References
 
-## Development
+If you use `xrt_devices` or the SEW teleoperation framework in your research, please cite the following:
 
-```sh
-uv sync --extra xr --extra recording --extra test
-uv run pytest
-uv run python -m build
+```bibtex
+@article{kong2026closedform,
+  title={A Closed-Form Geometric Retargeting Solver for Upper Body Humanoid Robot Teleoperation},
+  author={Kong, Chuizheng and Cho, Yunho and Jung, Wonsuhk and Wibowo, Idris and Shinde, Parth and Vinodh-Sangeetha, Sundhar and Chung, Long Kiu and Chen, Zhenyang and others},
+  journal={arXiv preprint arXiv:2602.01632},
+  year={2026},
+  url={https://arxiv.org/abs/2602.01632}
+}
 ```
 
-See [MIGRATION.md](MIGRATION.md) for transfer status and upstream provenance.
+- **Project Web**: [https://sew-mimic.com/](https://sew-mimic.com/)
+- **Prior Teleop System**: [https://xr-robot-teleop-website.pages.dev/](https://xr-robot-teleop-website.pages.dev/)
+- **Upstream Client**: [XR-Robot-Teleop-Client](https://github.com/yunho-c/XR-Robot-Teleop-Client)
+
+---
+
+## License
+
+Licensed under the MIT License. See [LICENSE](LICENSE) and [THIRD_PARTY_LICENSES](THIRD_PARTY_LICENSES) for details.
