@@ -1,0 +1,22 @@
+name: Python
+on: [push, pull_request]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python: ['3.10', '3.12']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: Euler-Rodrigues-Lab/geo_kin_core
+          ref: 765738fdbd680e2034859f8f100ac04cdeebb06d
+          path: .ci/geo_kin_core
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: '${{ matrix.python }}'
+      - run: uv sync --extra xr --extra recording --extra test
+      - run: uv pip install -e .ci/geo_kin_core
+      - run: uv run pytest -q
+      - run: uv run python -m build
