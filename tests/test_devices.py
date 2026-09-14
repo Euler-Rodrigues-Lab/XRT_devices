@@ -112,7 +112,8 @@ def test_mediapipe_hand_alignment_without_camera():
                            handedness=[[NS(category_name='Left', score=.99)]]))
     body = {'body_frame': {'origin': np.zeros(3), 'x_axis': np.eye(3)[:, 0],
                           'y_axis': np.eye(3)[:, 1], 'z_axis': np.eye(3)[:, 2]},
-            'right': {'W': np.array([1., 2., 3.])}}
+            'right': {'W': np.array([1., 2., 3.]), 'wrist_image': np.array([0., 0.])},
+            'left': {'W': np.zeros(3), 'wrist_image': np.array([1., 1.])}}
     result = device._get_hand_centric_coordinates(hands, body)
     np.testing.assert_allclose(result['right']['landmarks']['wrist'], [1, 2, 3])
     assert len(result['right']['landmarks']) == 21

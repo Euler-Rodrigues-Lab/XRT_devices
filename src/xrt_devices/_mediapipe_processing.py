@@ -19,6 +19,7 @@ import threading
 import time
 import traceback
 import argparse
+from itertools import permutations
 from typing import Optional, Dict, Tuple
 
 from scipy.spatial.transform import Rotation
@@ -197,6 +198,7 @@ class MediaPipeTeleopDevice:
         print("=" * 60)
     
     def _reset_internal_state(self):
+        self._wrist_rotation_history = {}
         """Reset internal state variables."""
         self.human_sew_poses = {
             "left": {"S": None, "E": None, "W": None},
@@ -414,6 +416,20 @@ class MediaPipeTeleopDevice:
             (left_hip.y + right_hip.y) / 2,
             (left_hip.z + right_hip.z) / 2
         ])
+
+        # Off-image hips are extrapolations, not measured lower-body anchors.
+        image_landmarks = pose_results.pose_landmarks.landmark
+        hips_visible = all(
+            np.isfinite([image_landmarks[i].x, image_landmarks[i].y]).all()
+            and 0 <= image_landmarks[i].x <= 1
+            and 0 <= image_landmarks[i].y <= 1
+            and getattr(image_landmarks[i], 'visibility', 0) > 0.75
+            for i in (23, 24)
+        ) and np.isfinite(hip_center).all()
+        if not hips_visible:
+            # Camera-down, assuming an upright camera. Only establishes the
+            # upper-body frame; never claim estimated legs/base as tracking.
+            hip_center = shoulder_center + np.array([0., 0.5, 0.])
         
         # Use shoulder center as origin for upper body tracking
         body_origin = shoulder_center
@@ -425,7 +441,9 @@ class MediaPipeTeleopDevice:
             left_shoulder.y - right_shoulder.y,
             left_shoulder.z - right_shoulder.z
         ])
-        y_axis = y_axis / (np.linalg.norm(y_axis) + 1e-8)  # normalize
+        if not np.isfinite(y_axis).all() or np.linalg.norm(y_axis) < 1e-6:
+            return None
+        y_axis = y_axis / np.linalg.norm(y_axis)
         
         # Z-axis: up direction (shoulder to hip, inverted)
         torso_vector = hip_center - shoulder_center
@@ -433,7 +451,11 @@ class MediaPipeTeleopDevice:
 
         # X-axis: forward direction (cross product)
         x_axis = np.cross(y_axis, z_axis)
-        x_axis = x_axis / (np.linalg.norm(x_axis) + 1e-8)
+        if not np.isfinite(x_axis).all() or np.linalg.norm(x_axis) < 1e-6:
+            return None
+        x_axis = x_axis / np.linalg.norm(x_axis)
+        # A transpose is an inverse only for an orthonormal frame.
+        z_axis = np.cross(x_axis, y_axis)
 
         # Create transformation matrix from world to body-centric frame
         rotation_matrix = np.column_stack([x_axis, y_axis, z_axis])
@@ -461,12 +483,17 @@ class MediaPipeTeleopDevice:
             sew_coordinates[side_key] = {
                 'S': S,
                 'E': E,
-                'W': W
+                'W': W,
+                'wrist_image': np.array([
+                    image_landmarks[getattr(self.mp_pose.PoseLandmark, f'{side}_WRIST')].x,
+                    image_landmarks[getattr(self.mp_pose.PoseLandmark, f'{side}_WRIST')].y,
+                ]),
             }
         
         # Add body frame info for debugging
         sew_coordinates['body_frame'] = {
             'origin': body_origin,
+            'hips_estimated': not hips_visible,
             'x_axis': x_axis,
             'y_axis': y_axis,
             'z_axis': z_axis,
@@ -554,12 +581,24 @@ class MediaPipeTeleopDevice:
             body_pos = body_rotation_matrix.T @ translated
             return body_pos
         
-        for hand_idx, (hand_landmarks, hand_world_landmarks, handedness) in enumerate(
-            zip(hand_results.multi_hand_landmarks, hand_results.multi_hand_world_landmarks, hand_results.multi_handedness)):
+        records = list(zip(hand_results.multi_hand_landmarks,
+                           hand_results.multi_hand_world_landmarks,
+                           hand_results.multi_handedness))[:2]
+        if not records:
+            return hand_frames
+        wrists = np.array([[r[0].landmark[0].x, r[0].landmark[0].y] for r in records])
+        pose_wrists = np.array([body_centric_coords[s]['wrist_image'] for s in ('left', 'right')])
+        if not np.isfinite(wrists).all() or not np.isfinite(pose_wrists).all():
+            return hand_frames
+        # Global one-to-one assignment also works when arms cross. Classifier
+        # selfie conventions must not swap a hand onto the other pose wrist.
+        assignment = min(permutations(range(2), len(records)),
+                         key=lambda a: sum(np.sum((wrists[i] - pose_wrists[j]) ** 2)
+                                           for i, j in enumerate(a)))
+        for hand_idx, (hand_landmarks, hand_world_landmarks, handedness) in enumerate(records):
             
-            # Flip MediaPipe hand labels to match body pose perspective
-            mediapipe_label = handedness.classification[0].label.lower()
-            actual_hand_label = 'right' if mediapipe_label == 'left' else 'left'
+            # Anatomical side comes from the pose association, not selfie labels.
+            actual_hand_label = ('left', 'right')[assignment[hand_idx]]
             
             # Get the corresponding pose wrist for alignment
             if actual_hand_label == 'left':
@@ -763,6 +802,12 @@ class MediaPipeTeleopDevice:
                         
                         finger_positions_wrist_frame[finger_name][joint_name] = joint_pos_wrist
             
+            # Solver compatibility: XR calls the thumb's anatomical IP
+            # landmark "thumb_pip". Preserve anatomical names as well; G1's
+            # hand payload requires this alias and XHand uses it for thumb IK.
+            thumb = finger_positions_wrist_frame['thumb']
+            if 'thumb_ip' in thumb:
+                thumb['thumb_pip'] = thumb['thumb_ip'].copy()
             return finger_positions_wrist_frame
             
         except Exception as e:
@@ -977,6 +1022,25 @@ class MediaPipeTeleopDevice:
             cv2.putText(frame, "No hands detected", (10, y_offset), 
                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (128, 128, 128), 1, cv2.LINE_AA)
     
+    def _tracked_wrist_rotation(self, side, hand_data):
+        """Brief last-observation hold in camera axes, not a motion predictor."""
+        if not hasattr(self, '_wrist_rotation_history'):
+            self._wrist_rotation_history = {}
+        now = time.monotonic()
+        body = self.human_sew_poses.get('R_world_body')
+        if body is None or not np.isfinite(body).all():
+            return None
+        rotation = None
+        if hand_data['landmarks'] is not None and hand_data['confidence'] > .5:
+            rotation = self._compute_wrist_rotation_from_hand(side, hand_data['landmarks'])
+        if rotation is not None and np.isfinite(rotation).all():
+            self._wrist_rotation_history[side] = (body @ rotation, self._last_received)
+            return rotation
+        previous = self._wrist_rotation_history.get(side)
+        if previous is not None and 0 <= now - previous[1] <= .5:
+            return body.T @ previous[0]
+        return None
+
     def get_controller_state(self):
         """
         Get current controller state with comprehensive output supporting both standalone and robosuite formats.
@@ -1023,27 +1087,15 @@ class MediaPipeTeleopDevice:
                         
                         # Always extend to 18 elements for consistent controller interface
                         # Check if hand pose data is available to compute wrist rotation matrix
-                        if (hand_data["landmarks"] is not None and 
-                            hand_data["confidence"] > 0.5):  # Minimum confidence threshold
-                            
-                            # Compute wrist rotation matrix from hand landmarks
-                            wrist_rotation_matrix = self._compute_wrist_rotation_from_hand(arm_side, hand_data["landmarks"])
-                            
-                            if wrist_rotation_matrix is not None:
-                                # Use computed rotation matrix (flatten row-wise)
-                                rotation_flat = wrist_rotation_matrix.flatten()
-                            else:
-                                # Hand detection failed - use identity matrix
-                                rotation_flat = np.array([1, 0, 0, 0, 1, 0, 0, 0, 1])
-                        else:
-                            # No hand pose or low confidence - use identity matrix  
-                            rotation_flat = np.array([1, 0, 0, 0, 1, 0, 0, 0, 1])
+                        wrist_rotation_matrix = self._tracked_wrist_rotation(arm_side, hand_data)
+                        rotation_flat = (wrist_rotation_matrix.flatten()
+                                         if wrist_rotation_matrix is not None else np.full(9, np.nan))
                         
                         # Always create 18-element action: SEW (9) + rotation matrix (9)
                         sew_action = np.concatenate([sew_action, rotation_flat])
                         
                         controller_state[f"{arm_side}_sew"] = sew_action
-                        controller_state[f"{arm_side}_valid"] = True
+                        controller_state[f"{arm_side}_valid"] = wrist_rotation_matrix is not None
                     else:
                         # Send invalid/empty action to hold current pose - use 18 elements with NaN
                         controller_state[f"{arm_side}_sew"] = np.full(18, np.nan)

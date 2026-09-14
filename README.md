@@ -141,3 +141,13 @@ If you use `xrt_devices` or the SEW teleoperation framework in your research, pl
 ## License
 
 Licensed under the MIT License. See [LICENSE](LICENSE) and [THIRD_PARTY_LICENSES](THIRD_PARTY_LICENSES) for details.
+# MediaPipe coordinate conventions
+
+Pose and Hand Tasks provide metric world landmarks with separate origins. Hands
+are made wrist-relative and attached to the corresponding pose wrist before
+conversion to the body frame (+X forward, +Y anatomical left, +Z up).
+Hand-to-arm assignment uses the same-image pose wrists, not a hardcoded swap of
+the classifier's selfie labels. Overlapping/occluded wrists can still be ambiguous.
+When hips are outside the image or low-confidence, the upper-body frame assumes
+anchors directly below the shoulders along camera-down. Keep the camera upright;
+this fallback is not measured lower-body tracking and does not enable base control.

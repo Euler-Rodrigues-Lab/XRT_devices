@@ -32,7 +32,8 @@ def _opt_array(value, shape=None):
 def _opt_sew(flat18) -> Optional[SEWPose]:
     if flat18 is None:
         return None
-    return SEWPose.from_flat18(np.asarray(flat18, dtype=float).reshape(18))
+    values = np.asarray(flat18, dtype=float).reshape(18)
+    return SEWPose.from_flat18(values) if np.isfinite(values).all() else None
 
 
 def action_to_retarget_frame(action: dict) -> Optional[RetargetFrame]:
