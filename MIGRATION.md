@@ -19,7 +19,7 @@
 
 - [ ] Validate against actual XRT headset and camera/model files.
 - [ ] Compare recorded outputs against source across robot-supported configurations.
-- [ ] Transfer extended study recording (tags/actions), process proxy and telemetry.
+- [x] Transfer study recording (tags/actions), process proxy and telemetry; loopback tested.
 
 ## Validation
 
@@ -58,3 +58,36 @@ was extracted from public proj_XRT revision `fcfa9d4b1385916b4d49383f1d7b41706bf
 is retained in the local cross-repository tracker without exposing private paths here.
 
 This package is MIT-licensed and has no geo_kin license check or analytic robot IK.
+
+## Consumer integration (2026-09-14)
+
+The study transport surface is `xrt_devices.study.StudyXRDevice` and
+`xrt_devices.study_process.WebRTCServerProxy`. Both have explicit lifecycle,
+ordered feedback/events, receive-age/sequence telemetry and atomically configured
+multi-take CSV recording. Process startup and recording commands are acknowledged;
+pose IPC uses the shared latest-value mailbox. Quest-created feedback channels
+are required. The optional packaged ZED launcher is in `xrt_devices.video`.
+Application policies and hardware orchestration remain in proj_XRT.
+
+Upper-body processing now follows the active computation in the original
+`xr_robot_teleop_client.py`: only left/right `ArmUpper` and `SpineMiddle` determine
+its frame. Live IOBT and CSV playback default to `upper_arms`, matching BVH and
+WARP's existing explicit selection. The incorrect `body_frame="hips"` upper-body
+variant is rejected. Hips remain anchors for the separate lower-body frame.
+This changes live/default CSV SEW, head and torso coordinates relative to the
+previous hip-oriented implementation; downstream calibrations made with that
+implementation should be checked. WARP's explicit upper-arm geometry is unchanged.
+Raw gripper signs also match the original client (`-1` above the 0.05 m
+thumb–index distance threshold, otherwise `+1`); distance-based typed consumers
+are unaffected by this sign correction. `R_torso` is restored as an alias of
+`R_lower_upper` in bone actions. All numeric action fields match the original
+client exactly across the 420-frame WARP sample sequence.
+
+These changes are local until the device implementation and consumer gitlinks
+are published. Live Quest/camera/ZED and hardware validation remain outstanding.
+
+The optional ZED launcher was transferred without behavior changes from public
+proj_XRT `fcfa9d4b1385916b4d49383f1d7b41706bf68b21`, source blob
+`25f9c110a86113613ddc346978e31c77567a7eba` (MIT). The README now documents the
+implemented SEED/IOBT/MediaPipe conventions, including legacy finger-slot and tip
+adjustment behavior that remains unchanged for archived replay parity.

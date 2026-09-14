@@ -4,6 +4,11 @@ import os
 import socket
 import struct
 import time
+import json
+import csv
+
+from xrt_devices.study import StudyXRDevice
+from xrt_devices.study_process import WebRTCServerProxy
 
 import pytest
 
@@ -34,17 +39,19 @@ def test_slow_consumer_receives_latest_not_backlog():
         child.close()
 
 
-def test_isolated_webrtc_pose_and_shutdown():
+@pytest.mark.parametrize("factory", [XRDeviceProcess, StudyXRDevice, WebRTCServerProxy])
+def test_isolated_webrtc_pose_and_shutdown(factory, tmp_path):
     from aiortc import RTCPeerConnection, RTCConfiguration, RTCSessionDescription
     from httpx import AsyncClient
     # Reserve an ephemeral port; close immediately before server startup.
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))
         port = sock.getsockname()[1]
-    device = XRDeviceProcess(host="127.0.0.1", port=port, stale_after=2)
+    device = factory(host="127.0.0.1", port=port, stale_after=2)
     try:
         device.start()
-        assert device.diagnostics()["pid"] != os.getpid()
+        if hasattr(device, "diagnostics"):
+            assert device.diagnostics()["pid"] != os.getpid()
 
         async def exercise():
             client = RTCPeerConnection(RTCConfiguration(iceServers=[]))
@@ -55,6 +62,20 @@ def test_isolated_webrtc_pose_and_shutdown():
             packet = struct.pack("<i", 84) + b"".join(
                 struct.pack("<i7f", i, *rng.normal(size=3), 0, 0, 0, 1)
                 for i in range(84))
+            study = isinstance(device, (StudyXRDevice, WebRTCServerProxy))
+            received = []
+            if study:
+                state = client.createDataChannel("unity_state")
+                for name in ("unity_cmds", "haptics", "motor_stats"):
+                    feedback = client.createDataChannel(name)
+                    def on_feedback(message, name=name):
+                        event = json.loads(message)
+                        if event.get('command') == 'latency_ping':
+                            state.send(json.dumps(dict(event, command='latency_pong', t1_ms=10000, t2_ms=10000)))
+                        else:
+                            received.append((name, event))
+                    feedback.on('message', on_feedback)
+                device.configure_recording(record_data=True, output_dir=str(tmp_path), started=False)
             opened = asyncio.Event()
             @channel.on("open")
             def on_open():
@@ -77,12 +98,46 @@ def test_isolated_webrtc_pose_and_shutdown():
                         break
                 else:
                     pytest.fail("No pose received from isolated process")
+                if study:
+                    for _ in range(100):
+                        if device.unity_cmds_ready():
+                            break
+                        await asyncio.sleep(.02)
+                    assert device.send_unity_command('{"command":"test"}')
+                    assert device.send_haptics('{"strength":0.1}')
+                    assert device.send_motor_stats('{"temperature":30}')
+                    state.send('{"command":"toggle","enabled":true}')
+                    state.send('{"command":"video_latency","decode_ms":2}')
+                    events = []
+                    for _ in range(200):
+                        events.extend(device.poll_unity_state())
+                        if len(received) == 3 and events and device.network_rtt_ms() is not None:
+                            break
+                        await asyncio.sleep(.02)
+                    assert {name for name, _ in received} == {'unity_cmds','haptics','motor_stats'}
+                    assert events == [{'command':'toggle','enabled':True}]
+                    assert device.video_latency()['decode_ms'] == 2
+                    assert device.network_rtt_ms() is not None
+                    device.configure_recording(record_data=False, output_dir=str(tmp_path), started=False)
+                    assert list(tmp_path.glob('*.csv'))
+                    for path in tmp_path.glob('*.csv'):
+                        with path.open() as stream:
+                            assert len(list(csv.DictReader(stream))) >= 84
             finally:
                 await client.close()
+                for _ in range(100):
+                    if not device.is_connected:
+                        break
+                    await asyncio.sleep(.02)
+                assert not device.is_connected
+                assert device.get_frame() is None
         asyncio.run(exercise())
+        if isinstance(device, (StudyXRDevice, WebRTCServerProxy)):
+            asyncio.run(exercise())
     finally:
         device.close()
-    assert device._process is None
+    if isinstance(device, XRDeviceProcess):
+        assert device._process is None
     assert device.get_frame() is None
 
 

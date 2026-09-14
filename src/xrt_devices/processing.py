@@ -41,40 +41,25 @@ simplified_finger_bones = [
 
 def _get_body_frame(
     bone_positions: dict,
+    body_frame="upper_arms",
 ) -> tuple[np.ndarray | None, np.ndarray | None]:
-    """
-    Calculates the body-centric coordinate frame (origin and rotation matrix).
+    """Upper-body frame from ArmUpper left/right and SpineMiddle only.
 
-    Args:
-        bone_positions (dict): A dictionary mapping bone IDs to their positions.
-
-    Returns:
-        A tuple containing:
-        - np.ndarray: The origin of the body frame (shoulder_center).
-        - np.ndarray: The rotation matrix from world to body frame (R_world_body).
-        Returns (None, None) if essential bones are missing.
+    Matches the active computation in xr_robot_teleop_client._get_body_frame.
+    Columns of the returned rotation are upper-body axes in world coordinates.
+    ``body_frame`` retains the explicit ``upper_arms`` caller spelling; the old
+    hip-based upper-body variant is rejected rather than silently reinterpreted.
     """
-    # Get key body landmarks.
-    left_shoulder = bone_positions.get(FullBodyBoneId.FullBody_LeftShoulder)
-    right_shoulder = bone_positions.get(FullBodyBoneId.FullBody_RightShoulder)
-    left_hip = bone_positions.get(FullBodyBoneId.FullBody_LeftUpperLeg)
-    right_hip = bone_positions.get(FullBodyBoneId.FullBody_RightUpperLeg)
+    if body_frame != "upper_arms":
+        raise ValueError("upper-body frame must use body_frame='upper_arms'; hips define the lower-body frame")
+    left_arm_upper = bone_positions.get(FullBodyBoneId.FullBody_LeftArmUpper)
+    right_arm_upper = bone_positions.get(FullBodyBoneId.FullBody_RightArmUpper)
     spine_middle = bone_positions.get(FullBodyBoneId.FullBody_SpineMiddle)
-
-    if left_shoulder is None or right_shoulder is None or spine_middle is None:
-        return None, None
-    if left_hip is None or right_hip is None:
+    if left_arm_upper is None or right_arm_upper is None or spine_middle is None:
         return None, None
 
-    # Body origin and "up" vector from shoulders — same convention as the original
-    # system, so the euler-angle decomposition for neck yaw/pitch stays 1:1.
-    shoulder_center = (left_shoulder + right_shoulder) / 2
-
-    # Y-axis (lateral) from HIPS, not shoulders.  Hip positions are completely
-    # decoupled from arm kinematics: extending either arm never moves the hips,
-    # so the body frame's lateral axis stays fixed and the neck cannot be disturbed.
-    # Shoulders (even clavicles) drift slightly with scapular movement.
-    y_axis = left_hip - right_hip
+    shoulder_center = (left_arm_upper + right_arm_upper) / 2
+    y_axis = left_arm_upper - right_arm_upper
     y_axis = y_axis / (np.linalg.norm(y_axis) + 1e-8)
 
     torso_vector = shoulder_center - spine_middle
@@ -87,7 +72,7 @@ def _get_body_frame(
     z_axis = np.cross(x_axis, y_axis)
     z_axis = z_axis / (np.linalg.norm(z_axis) + 1e-8)
 
-    # Create transformation matrix from world to body-centric frame
+    # Columns are upper-body axes expressed in world coordinates.
     rotation_matrix = np.column_stack([x_axis, y_axis, z_axis])
     # normalize the rotation matrix
     U_rot, _, V_rot_T = np.linalg.svd(rotation_matrix)
@@ -108,21 +93,17 @@ def _get_lower_body_frame(
     Returns:
         A tuple containing:
         - np.ndarray: The origin of the lower body frame (hip_center).
-        - np.ndarray: The rotation matrix from world to lower body frame (R_world_lower_body).
+        - np.ndarray: Lower-body axes expressed in world coordinates (R_world_lower_body).
         Returns (None, None) if essential bones are missing.
     """
     # Get key lower body landmarks
     left_hip = bone_positions.get(FullBodyBoneId.FullBody_LeftUpperLeg)
     right_hip = bone_positions.get(FullBodyBoneId.FullBody_RightUpperLeg)
-    hip_bone = bone_positions.get(FullBodyBoneId.FullBody_Hips)
-    # Calculate lower body center (origin of the lower body frame)
-    hip_center = (left_hip + right_hip) / 2.0
-
     spine_middle = bone_positions.get(FullBodyBoneId.FullBody_SpineMiddle)
-    torso_vector = -(hip_center - spine_middle)
-
     if left_hip is None or right_hip is None or spine_middle is None:
         return None, None
+    hip_center = (left_hip + right_hip) / 2.0
+    torso_vector = spine_middle - hip_center
 
     # Create lower body-centric coordinate frame
     # Y-axis: right to left (hip line)
@@ -137,7 +118,7 @@ def _get_lower_body_frame(
     z_axis = np.cross(x_axis, y_axis)
     z_axis = z_axis / (np.linalg.norm(z_axis) + 1e-8)
 
-    # Create transformation matrix from world to lower body-centric frame
+    # Columns are lower-body axes expressed in world coordinates.
     rotation_matrix = np.column_stack([x_axis, y_axis, z_axis])
     # normalize the rotation matrix
     U_rot, _, V_rot_T = np.linalg.svd(rotation_matrix)
@@ -146,14 +127,14 @@ def _get_lower_body_frame(
     return hip_center, R_world_lower_body
 
 
-def _get_body_centric_coordinates(bones: list[Bone], get_wrist_rot_from_hand=False) -> dict:
+def _get_body_centric_coordinates(bones: list[Bone], get_wrist_rot_from_hand=False, body_frame="upper_arms") -> dict:
     """
     Convert bone positions to a body-centric coordinate system for dual Kinova3 robot.
     """
     bone_positions = {b.id: np.array(b.position) for b in bones}
     bone_rotations = {b.id: np.array(b.rotation) for b in bones}
 
-    shoulder_center, R_world_body = _get_body_frame(bone_positions)
+    shoulder_center, R_world_body = _get_body_frame(bone_positions, body_frame)
 
     if shoulder_center is None or R_world_body is None:
         return None
@@ -171,17 +152,14 @@ def _get_body_centric_coordinates(bones: list[Bone], get_wrist_rot_from_hand=Fal
         side_key_pascal = side.capitalize()
 
         ArmUpper_id = getattr(FullBodyBoneId, f"FullBody_{side_key_pascal}ArmUpper")
-        shoulder_id = getattr(FullBodyBoneId, f"FullBody_{side_key_pascal}Shoulder")
         elbow_id = getattr(FullBodyBoneId, f"FullBody_{side_key_pascal}ArmLower")
         wrist_id = getattr(FullBodyBoneId, f"FullBody_{side_key_pascal}HandWrist")
 
         ArmUpper_pos = bone_positions.get(ArmUpper_id)
-        shoulder_pos = bone_positions.get(shoulder_id)
-        shoulder_pos_act = (ArmUpper_pos + shoulder_pos) / 2.0
         elbow_pos = bone_positions.get(elbow_id)
         wrist_pos = bone_positions.get(wrist_id)
 
-        if shoulder_pos is None or elbow_pos is None or wrist_pos is None:
+        if ArmUpper_pos is None or elbow_pos is None or wrist_pos is None:
             sew_coordinates[side] = None
             continue
 
@@ -316,7 +294,7 @@ def _compute_extruded_tip_position(tip_pos: np.ndarray, tip_rot_q: np.ndarray, s
     extrude_vec = np.array([0.0, sign * 0.01, 0.0])
     return tip_pos + q2R(tip_rot_q) @ extrude_vec
 
-def _get_finger_coordinates(bones: list[Bone], coord_type: str, bones_to_return: list[int]) -> dict:
+def _get_finger_coordinates(bones: list[Bone], coord_type: str, bones_to_return: list[int], body_frame="upper_arms") -> dict:
     """
     Get finger bone coordinates in either absolute, body-centric, or hand-centric frame.
 
@@ -366,7 +344,7 @@ def _get_finger_coordinates(bones: list[Bone], coord_type: str, bones_to_return:
         return returned_coords
 
     elif coord_type == "body_centric":
-        shoulder_center, R_world_body = _get_body_frame(bone_positions)
+        shoulder_center, R_world_body = _get_body_frame(bone_positions, body_frame)
 
         if shoulder_center is None or R_world_body is None:
             # Cannot compute body frame, return None for all requested bones
@@ -390,7 +368,7 @@ def _get_finger_coordinates(bones: list[Bone], coord_type: str, bones_to_return:
 
     elif coord_type == "hand_centric":
         # First transform to body-centric coordinates (like other coordinate types)
-        shoulder_center, R_world_body = _get_body_frame(bone_positions)
+        shoulder_center, R_world_body = _get_body_frame(bone_positions, body_frame)
 
         if shoulder_center is None or R_world_body is None:
             # Cannot compute body frame, return None for all requested bones
@@ -405,7 +383,7 @@ def _get_finger_coordinates(bones: list[Bone], coord_type: str, bones_to_return:
             return body_pos
 
         # Get SEW coordinates which contain wrist rotation information in body frame
-        sew_coords = _get_body_centric_coordinates(bones)
+        sew_coords = _get_body_centric_coordinates(bones, body_frame=body_frame)
 
         if sew_coords is None or sew_coords["left"] is None or sew_coords["right"] is None:
             # Cannot compute hand frame, return None for all requested bones
@@ -470,9 +448,9 @@ def _calc_gripper_state(bone_positions: dict) -> tuple[np.ndarray, np.ndarray]:
         else 0.1
     )
 
-    left_gripper_action = np.array([1]) if left_gripper_dist > 0.05 else np.array([-1])
+    left_gripper_action = np.array([-1]) if left_gripper_dist > 0.05 else np.array([1])
     right_gripper_action = (
-        np.array([1]) if right_gripper_dist > 0.05 else np.array([-1])
+        np.array([-1]) if right_gripper_dist > 0.05 else np.array([1])
     )
     return left_gripper_action, right_gripper_action, left_gripper_dist, right_gripper_dist
 
@@ -783,7 +761,7 @@ def hat(k):
 # --- Robosuite and WebRTC Integration ---
 
 
-def bones_to_action(bones: list[Bone], tags: dict = None) -> dict:
+def bones_to_action(bones: list[Bone], tags: dict = None, *, body_frame="upper_arms") -> dict:
     """
     Custom function to process bones into actions for dual Kinova3 robot.
     """
@@ -804,10 +782,11 @@ def bones_to_action(bones: list[Bone], tags: dict = None) -> dict:
         bones=bones,
         coord_type="hand_centric",
         bones_to_return=simplified_finger_bones,
+        body_frame=body_frame,
     )
 
     # Arm Control (absolute SEW)
-    sew_coords = _get_body_centric_coordinates(bones)
+    sew_coords = _get_body_centric_coordinates(bones, body_frame=body_frame)
 
     if sew_coords is None or sew_coords["left"] is None or sew_coords["right"] is None:
         print("Warning: Could not calculate SEW coordinates. Skipping action.")
@@ -887,6 +866,7 @@ def bones_to_action(bones: list[Bone], tags: dict = None) -> dict:
     action_dict["body_center"] = body_center_in_world
     action_dict["R_world_upper_body"] = R_world_upper_body
     action_dict["R_lower_upper"] = R_lower_upper
+    action_dict["R_torso"] = R_lower_upper
     action_dict["R_world_upper_body"] = R_world_upper_body
     action_dict["p_world_upper_body"] = sew_coords["shoulder_center"]
 
