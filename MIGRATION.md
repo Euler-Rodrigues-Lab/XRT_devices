@@ -19,7 +19,7 @@
 
 - [ ] Validate against actual XRT headset and camera/model files.
 - [ ] Compare recorded outputs against source across robot-supported configurations.
-- [ ] Transfer extended study recording (tags/actions), process proxy and telemetry.
+- [x] Transfer study recording (tags/actions), process proxy and telemetry; loopback tested.
 
 ## Validation
 
@@ -58,3 +58,27 @@ was extracted from public proj_XRT revision `fcfa9d4b1385916b4d49383f1d7b41706bf
 is retained in the local cross-repository tracker without exposing private paths here.
 
 This package is MIT-licensed and has no geo_kin license check or analytic robot IK.
+
+## Consumer integration (2026-09-14)
+
+The study transport surface is `xrt_devices.study.StudyXRDevice` and
+`xrt_devices.study_process.WebRTCServerProxy`. Both have explicit lifecycle,
+ordered feedback/events, receive-age/sequence telemetry and atomically configured
+multi-take CSV recording. Process startup and recording commands are acknowledged;
+pose IPC uses the shared latest-value mailbox. Quest-created feedback channels
+are required. The optional packaged ZED launcher is in `xrt_devices.video`.
+Application policies and hardware orchestration remain in proj_XRT.
+
+WARP selects `OfflineCSVAdapter(..., body_frame="upper_arms")` to preserve its
+archived input geometry. Live defaults stay `hips`. WARP's frozen RBY1 pin and
+paper settings are unchanged. Its full 420-frame input fixture is the parity gate.
+The body-frame option is human-coordinate processing, not analytic robot IK.
+
+These changes are local until the device implementation and consumer gitlinks
+are published. Live Quest/camera/ZED and hardware validation remain outstanding.
+
+The optional ZED launcher was transferred without behavior changes from public
+proj_XRT `fcfa9d4b1385916b4d49383f1d7b41706bf68b21`, source blob
+`25f9c110a86113613ddc346978e31c77567a7eba` (MIT). The README now documents the
+implemented SEED/IOBT/MediaPipe conventions, including legacy finger-slot and tip
+adjustment behavior that remains unchanged for archived replay parity.

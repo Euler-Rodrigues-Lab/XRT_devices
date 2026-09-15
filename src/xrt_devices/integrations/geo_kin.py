@@ -165,7 +165,7 @@ class OfflineCSVAdapter:
     """
 
     def __init__(self, csv_file, playback_speed: float = 1.0, loop: bool = True,
-                 **reader_kwargs):
+                 body_frame="hips", **reader_kwargs):
         """
         Args:
             csv_file: Recorded OpenXR body-pose CSV.
@@ -174,7 +174,10 @@ class OfflineCSVAdapter:
         from xrt_devices.recording.csv_reader import CSVDataReader
         from xrt_devices.processing import bones_to_action
 
-        self._bones_to_action = bones_to_action
+        from functools import partial
+        if body_frame not in ("hips", "upper_arms"):
+            raise ValueError("body_frame must be hips or upper_arms")
+        self._bones_to_action = partial(bones_to_action, body_frame=body_frame)
         self.reader = CSVDataReader(str(csv_file), playback_speed, loop=loop, **reader_kwargs)
         self.loop = loop
 

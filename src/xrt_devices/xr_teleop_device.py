@@ -3,6 +3,7 @@ import asyncio
 from contextlib import asynccontextmanager
 from copy import deepcopy
 import json
+import inspect
 import struct
 import queue
 import threading
@@ -29,6 +30,7 @@ class XRDevice:
             raise ValueError("stale_after must be positive")
         self.host, self.port, self.stale_after = host, port, stale_after
         self._process = process_bones_to_action_fn or bones_to_action
+        self._accepts_tags = "tags" in inspect.signature(self._process).parameters
         self._lock = threading.Lock()
         self._pending = queue.Queue(maxsize=1)
         self._events = queue.Queue(maxsize=256)
@@ -72,7 +74,9 @@ class XRDevice:
             if self._recording_origin is None:
                 self._recording_origin = received_at
             self.recorder.write(received_at - self._recording_origin, bones)
-        action = self._process(bones)
+        with self._lock:
+            tags = deepcopy(self._tags)
+        action = self._process(bones, tags=tags) if self._accepts_tags else self._process(bones)
         if action is not None:
             action = dict(action, skeleton=bones_to_skeleton(bones))
         with self._lock:
@@ -82,19 +86,30 @@ class XRDevice:
                 self._frame = None
                 return None
             action = deepcopy(action)
-            action["tags"] = deepcopy(self._tags)
+            action["tags"] = tags
             self._sequence += 1
             self._frame = DeviceFrame("xrt", self._sequence, received_at, action)
-            return deepcopy(self._frame)
+            frame = deepcopy(self._frame)
+        self._after_frame(bones, frame)
+        return frame
+
+    def _after_frame(self, bones, frame):
+        """Optional application-neutral recording hook, outside the snapshot lock."""
+
+    def _feedback_tick(self):
+        """Optional telemetry, called on the transport event loop."""
+
+    def _worker_tick(self):
+        """Optional maintenance outside the transport event loop."""
 
     def _run(self):
         while not self._stop.is_set():
             try:
+                self._worker_tick()
                 message, received_at, generation = self._pending.get(timeout=0.05)
+                self.process_packet(message, received_at=received_at, generation=generation)
             except queue.Empty:
                 continue
-            try:
-                self.process_packet(message, received_at=received_at, generation=generation)
             except Exception as exc:
                 self.invalid_packets += 1
                 self.last_error = str(exc)
@@ -168,13 +183,17 @@ class XRDevice:
         self.server = WebRTCServer(
             host=self.host, port=self.port, connection_callback=self._connection_changed,
             datachannel_handlers={"body_pose": self.submit_pose, "unity_state": self._event,
-                                  "apriltag_pose": self._apriltag},
+                                  "apriltag_pose": self._apriltag,
+                                  "haptics": lambda message: None,
+                                  "motor_stats": lambda message: None,
+                                  "unity_cmds": lambda message: None},
         )
         # This input device is single-source; reject a second headset's offer.
         @asynccontextmanager
         async def lifespan(app):
             async def send_loop():
                 while True:
+                    self._feedback_tick()
                     for _ in range(32):
                         try:
                             label, payload = self._feedback.get_nowait()

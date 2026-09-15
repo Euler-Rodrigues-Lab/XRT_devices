@@ -41,6 +41,7 @@ simplified_finger_bones = [
 
 def _get_body_frame(
     bone_positions: dict,
+    body_frame="hips",
 ) -> tuple[np.ndarray | None, np.ndarray | None]:
     """
     Calculates the body-centric coordinate frame (origin and rotation matrix).
@@ -54,6 +55,8 @@ def _get_body_frame(
         - np.ndarray: The rotation matrix from world to body frame (R_world_body).
         Returns (None, None) if essential bones are missing.
     """
+    if body_frame not in ("hips", "upper_arms"):
+        raise ValueError("body_frame must be hips or upper_arms")
     # Get key body landmarks.
     left_shoulder = bone_positions.get(FullBodyBoneId.FullBody_LeftShoulder)
     right_shoulder = bone_positions.get(FullBodyBoneId.FullBody_RightShoulder)
@@ -75,6 +78,16 @@ def _get_body_frame(
     # so the body frame's lateral axis stays fixed and the neck cannot be disturbed.
     # Shoulders (even clavicles) drift slightly with scapular movement.
     y_axis = left_hip - right_hip
+    if body_frame == "upper_arms":
+        # Archived recordings used upper-arm landmarks for both the lateral
+        # axis and origin. This is an explicit replay convention, not a change
+        # to current live tracking defaults.
+        left = bone_positions.get(FullBodyBoneId.FullBody_LeftArmUpper)
+        right = bone_positions.get(FullBodyBoneId.FullBody_RightArmUpper)
+        if left is None or right is None:
+            return None, None
+        shoulder_center = (left + right) / 2
+        y_axis = left - right
     y_axis = y_axis / (np.linalg.norm(y_axis) + 1e-8)
 
     torso_vector = shoulder_center - spine_middle
@@ -146,14 +159,14 @@ def _get_lower_body_frame(
     return hip_center, R_world_lower_body
 
 
-def _get_body_centric_coordinates(bones: list[Bone], get_wrist_rot_from_hand=False) -> dict:
+def _get_body_centric_coordinates(bones: list[Bone], get_wrist_rot_from_hand=False, body_frame="hips") -> dict:
     """
     Convert bone positions to a body-centric coordinate system for dual Kinova3 robot.
     """
     bone_positions = {b.id: np.array(b.position) for b in bones}
     bone_rotations = {b.id: np.array(b.rotation) for b in bones}
 
-    shoulder_center, R_world_body = _get_body_frame(bone_positions)
+    shoulder_center, R_world_body = _get_body_frame(bone_positions, body_frame)
 
     if shoulder_center is None or R_world_body is None:
         return None
@@ -316,7 +329,7 @@ def _compute_extruded_tip_position(tip_pos: np.ndarray, tip_rot_q: np.ndarray, s
     extrude_vec = np.array([0.0, sign * 0.01, 0.0])
     return tip_pos + q2R(tip_rot_q) @ extrude_vec
 
-def _get_finger_coordinates(bones: list[Bone], coord_type: str, bones_to_return: list[int]) -> dict:
+def _get_finger_coordinates(bones: list[Bone], coord_type: str, bones_to_return: list[int], body_frame="hips") -> dict:
     """
     Get finger bone coordinates in either absolute, body-centric, or hand-centric frame.
 
@@ -366,7 +379,7 @@ def _get_finger_coordinates(bones: list[Bone], coord_type: str, bones_to_return:
         return returned_coords
 
     elif coord_type == "body_centric":
-        shoulder_center, R_world_body = _get_body_frame(bone_positions)
+        shoulder_center, R_world_body = _get_body_frame(bone_positions, body_frame)
 
         if shoulder_center is None or R_world_body is None:
             # Cannot compute body frame, return None for all requested bones
@@ -390,7 +403,7 @@ def _get_finger_coordinates(bones: list[Bone], coord_type: str, bones_to_return:
 
     elif coord_type == "hand_centric":
         # First transform to body-centric coordinates (like other coordinate types)
-        shoulder_center, R_world_body = _get_body_frame(bone_positions)
+        shoulder_center, R_world_body = _get_body_frame(bone_positions, body_frame)
 
         if shoulder_center is None or R_world_body is None:
             # Cannot compute body frame, return None for all requested bones
@@ -405,7 +418,7 @@ def _get_finger_coordinates(bones: list[Bone], coord_type: str, bones_to_return:
             return body_pos
 
         # Get SEW coordinates which contain wrist rotation information in body frame
-        sew_coords = _get_body_centric_coordinates(bones)
+        sew_coords = _get_body_centric_coordinates(bones, body_frame=body_frame)
 
         if sew_coords is None or sew_coords["left"] is None or sew_coords["right"] is None:
             # Cannot compute hand frame, return None for all requested bones
@@ -783,7 +796,7 @@ def hat(k):
 # --- Robosuite and WebRTC Integration ---
 
 
-def bones_to_action(bones: list[Bone], tags: dict = None) -> dict:
+def bones_to_action(bones: list[Bone], tags: dict = None, *, body_frame="hips") -> dict:
     """
     Custom function to process bones into actions for dual Kinova3 robot.
     """
@@ -804,10 +817,11 @@ def bones_to_action(bones: list[Bone], tags: dict = None) -> dict:
         bones=bones,
         coord_type="hand_centric",
         bones_to_return=simplified_finger_bones,
+        body_frame=body_frame,
     )
 
     # Arm Control (absolute SEW)
-    sew_coords = _get_body_centric_coordinates(bones)
+    sew_coords = _get_body_centric_coordinates(bones, body_frame=body_frame)
 
     if sew_coords is None or sew_coords["left"] is None or sew_coords["right"] is None:
         print("Warning: Could not calculate SEW coordinates. Skipping action.")
