@@ -134,8 +134,9 @@ class XRDeviceAdapter:
 class MediaPipeDeviceAdapter:
     """Camera tracking -> arm/hand frames (no inferred waist/base motion)."""
 
-    def __init__(self, **kwargs):
+    def __init__(self, *, legs=False, **kwargs):
         from xrt_devices import MediaPipeTeleopDevice
+        self.legs = legs
         self.device = MediaPipeTeleopDevice(**kwargs)
 
     @property
@@ -144,7 +145,13 @@ class MediaPipeDeviceAdapter:
 
     def get_frame(self):
         snapshot = self.device.get_frame()
-        return None if snapshot is None else action_to_retarget_frame(snapshot.action)
+        if snapshot is None:
+            return None
+        action = dict(snapshot.action)
+        if not self.legs:
+            action.pop('left_hka', None)
+            action.pop('right_hka', None)
+        return action_to_retarget_frame(action)
 
     def cleanup(self):
         self.device.close()

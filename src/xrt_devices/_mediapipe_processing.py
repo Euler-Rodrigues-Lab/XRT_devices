@@ -198,6 +198,7 @@ class MediaPipeTeleopDevice:
         print("=" * 60)
     
     def _reset_internal_state(self):
+        self._leg_targets = {'left_hka': None, 'right_hka': None}
         self._wrist_rotation_history = {}
         """Reset internal state variables."""
         self.human_sew_poses = {
@@ -313,6 +314,8 @@ class MediaPipeTeleopDevice:
     
     def _process_pose_landmarks(self, pose_results, frame):
         """Process MediaPipe pose landmarks using body-centric coordinate system."""
+        from ._mediapipe_legs import leg_targets
+        self._leg_targets = leg_targets(pose_results)
         try:
             if pose_results.pose_landmarks and pose_results.pose_world_landmarks:
                 # Get body-centric coordinates
@@ -1075,6 +1078,7 @@ class MediaPipeTeleopDevice:
                     'engaged': self.engaged
                 }
                 
+                controller_state.update(getattr(self, '_leg_targets', {}))
                 # Add robosuite format (for robosuite demos)
                 for arm_side in ["left", "right"]:
                     sew = self.human_sew_poses[arm_side]
