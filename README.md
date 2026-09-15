@@ -29,56 +29,6 @@ recording used by WARP; it does not mean arbitrary raw BVH or a different BONES-
 channel. A CSV is a storage format: an OpenXR (Quest IOBT) recording can also be a CSV, so the
 filename extension does not determine the anatomical convention.
 
-### Skeleton convention is not a file container
-
-- **BONES-SEED** uses the **SOMA** skeleton convention (names, hierarchy and rest
-  offsets). SOMA can be stored in BVH or USD; it is not synonymous with BVH.
-- **LaFAN1** names the dataset/skeleton mapping used by this package's BVH reader.
-  A CMU, Mixamo or SOMA BVH needs its own mapping; a `.bvh` suffix does not imply
-  LaFAN1 compatibility.
-- **OpenXR** here means the Quest full-body extension skeleton transported by
-  XRT-Client, not a claim that every OpenXR runtime emits this 84-ID namespace.
-- CSV and CSV.GZ describe storage/compression, not a skeleton convention.
-  The legacy internal `is_vmd` heuristic is not a dataset identifier.
-
-#### BONES-SEED production conversion contract
-
-The supplied exporter contract is SOMA proportional BVH from HuggingFace at
-`soma_proportional/bvh/{YYMMDD}/{name}.bvh`: 120 fps, centimetres, Y-up.
-The exporter performs FK on local rotations, applies the axis transform, and
-writes global positions/quaternions directly to CSV; CSV.GZ is gzip of that CSV,
-with no intermediate skeleton format. Production options are
-`--variant proportional --axis-transform soma_to_flu --stride 1`, yielding
-metres, Z-up FLU, and `time_elapsed,bone_id,pos_*,rot_*` (quaternion XYZW).
-
-One exporter mapping dictionary maps 70 bones and synthesizes Root (ID 0), for
-71 bones/frame. Intentionally omitted: Scapula, WristTwist, Palm, Subtalar,
-Transverse, AnkleTwist and Chest (ID 5). SOMA Neck1 is omitted; Neck2 supplies the
-single neck. These are exporter details supplied by the dataset workflow, not
-a claim that this package includes that raw SOMA converter. The CSV reader
-consumes the already-converted export; do not run the LaFAN1 default mapping on
-raw SOMA BVH. The default OpenXR namespace includes IDs that may be absent in
-actual tracker packets.
-
-### Source coordinates and time
-
-| Property | BONES-SEED bone CSV export | Live OpenXR (Quest IOBT) through XRT-Client | LaFAN1 | MediaPipe Pose + Hand Tasks |
-|---|---|---|---|---|
-| Input representation | Rows grouped by `time_elapsed` or `timestamp`; `bone_id` or `id`; position and quaternion columns | Little-endian `int32 count`, then `count` records of `<i7f>`: ID, XYZ position, XYZW quaternion | BVH hierarchy (`ROOT`, `JOINT`, `OFFSET`, `CHANNELS`) and sampled `MOTION` rows | 33 Pose landmarks and 21 landmarks per detected hand; image and metric world results are separate |
-| Skeleton identifiers | Uses this package's `FullBodyBoneId` namespace. The canonical WARP CSV has 71 distinct IDs, including root | Same `FullBodyBoneId` namespace, up to 84 defined pose IDs (0–83); packet count is explicit | Named hierarchy; explicit LaFAN1-to-`FullBodyBoneId` mapping, configurable per file | Pose and Hand have separate index spaces; Hand index 0 is a wrist, not body/root ID 0 |
-| Position units used by processing | Metres, already in the exported internal coordinate system; reader does not rescale | Metres expected from the Unity capture; receiver does not rescale | `unit_scale=0.01` by default (cm → m); explicit override for other exporters | Metric **world** landmarks for geometry; normalized image XY only for association, visibility checks, and drawing |
-| Axes at ingestion | Already right-handed FLU: +X forward, +Y left, +Z up | Wire input is Unity left-handed: +X right, +Y up, +Z forward. Decode once with `p_internal=(z,-x,y)` | Right-handed Y-up → Z-up: `(x,-z,y)` by default; configurable `world_rotation` | Keep the native MediaPipe world vectors until constructing the body frame; do **not** apply the Unity permutation. The upright-camera fallback treats native +Y as camera-down |
-| Quaternion order | `rot_x, rot_y, rot_z, rot_w`; read as stored | Wire XYZW becomes internal `(-qz,qx,-qy,qw)` | Euler degrees in declared channel order; FK outputs world matrices and XYZW bone quaternions | No landmark quaternion is supplied; wrist orientation is constructed from hand points |
-| Position reference | Exported world/global bone positions, not parent-relative offsets | Common capture/world frame expected by the receiver, not parent-relative bone offsets | Parent-relative offsets/channels resolved to global poses by forward kinematics | Pose-world origin is the hip midpoint; Hand-world origin is the hand's geometric center. They are **not one shared translated world frame** |
-| Conversion on replay | Bone rows are already converted: no second Unity-to-FLU transform | A CSV recorded by XRT_devices stores decoded internal bones; replay follows the same rule as BONES-SEED CSV | Scale and world rotation applied once while evaluating the hierarchy | Hand points are made wrist-relative and attached to the matching Pose wrist before body/wrist transforms |
-| Timing | Timestamp values are seconds. Playback uses the stored sampling times; WARP explicitly samples at 30 Hz | `DeviceFrame.received_at` is host monotonic receive time, not headset capture time. The body packet carries no source timestamp | `Frame Time` seconds per sample; floor sampling, speed scaling, optional looping | Both Tasks run sequentially on the same RGB image. The device frame timestamp is host monotonic camera capture time; Tasks receive increasing millisecond timestamps |
-
-Google documents the separate metric origins in its
-[Pose result contract](https://developers.google.com/edge/mediapipe/solutions/vision/pose_landmarker/python#handle_and_display_results)
-and [Hand result contract](https://developers.google.com/edge/mediapipe/solutions/vision/hand_landmarker/python#handle_and_display_results).
-The body/hand alignment below is this package's implementation, not a claim that
-the two independently estimated metric spaces are perfectly calibrated.
-
 ### Source body keypoints
 
 Names below are exact enum suffixes: prepend `FullBody_`; `{Left,Right}` and
@@ -288,6 +238,56 @@ Implementation references: [bone processing](src/xrt_devices/processing.py),
 [BVH parsing and playback](src/xrt_devices/recording/bvh_reader.py),
 [MediaPipe processing](src/xrt_devices/_mediapipe_processing.py), and
 [typed adapter](src/xrt_devices/integrations/geo_kin.py).
+
+### Skeleton convention is not a file container
+
+- **BONES-SEED** uses the **SOMA** skeleton convention (names, hierarchy and rest
+  offsets). SOMA can be stored in BVH or USD; it is not synonymous with BVH.
+- **LaFAN1** names the dataset/skeleton mapping used by this package's BVH reader.
+  A CMU, Mixamo or SOMA BVH needs its own mapping; a `.bvh` suffix does not imply
+  LaFAN1 compatibility.
+- **OpenXR** here means the Quest full-body extension skeleton transported by
+  XRT-Client, not a claim that every OpenXR runtime emits this 84-ID namespace.
+- CSV and CSV.GZ describe storage/compression, not a skeleton convention.
+  The legacy internal `is_vmd` heuristic is not a dataset identifier.
+
+#### BONES-SEED production conversion contract
+
+The supplied exporter contract is SOMA proportional BVH from HuggingFace at
+`soma_proportional/bvh/{YYMMDD}/{name}.bvh`: 120 fps, centimetres, Y-up.
+The exporter performs FK on local rotations, applies the axis transform, and
+writes global positions/quaternions directly to CSV; CSV.GZ is gzip of that CSV,
+with no intermediate skeleton format. Production options are
+`--variant proportional --axis-transform soma_to_flu --stride 1`, yielding
+metres, Z-up FLU, and `time_elapsed,bone_id,pos_*,rot_*` (quaternion XYZW).
+
+One exporter mapping dictionary maps 70 bones and synthesizes Root (ID 0), for
+71 bones/frame. Intentionally omitted: Scapula, WristTwist, Palm, Subtalar,
+Transverse, AnkleTwist and Chest (ID 5). SOMA Neck1 is omitted; Neck2 supplies the
+single neck. These are exporter details supplied by the dataset workflow, not
+a claim that this package includes that raw SOMA converter. The CSV reader
+consumes the already-converted export; do not run the LaFAN1 default mapping on
+raw SOMA BVH. The default OpenXR namespace includes IDs that may be absent in
+actual tracker packets.
+
+### Source coordinates and time
+
+| Property | BONES-SEED bone CSV export | Live OpenXR (Quest IOBT) through XRT-Client | LaFAN1 | MediaPipe Pose + Hand Tasks |
+|---|---|---|---|---|
+| Input representation | Rows grouped by `time_elapsed` or `timestamp`; `bone_id` or `id`; position and quaternion columns | Little-endian `int32 count`, then `count` records of `<i7f>`: ID, XYZ position, XYZW quaternion | BVH hierarchy (`ROOT`, `JOINT`, `OFFSET`, `CHANNELS`) and sampled `MOTION` rows | 33 Pose landmarks and 21 landmarks per detected hand; image and metric world results are separate |
+| Skeleton identifiers | Uses this package's `FullBodyBoneId` namespace. The canonical WARP CSV has 71 distinct IDs, including root | Same `FullBodyBoneId` namespace, up to 84 defined pose IDs (0–83); packet count is explicit | Named hierarchy; explicit LaFAN1-to-`FullBodyBoneId` mapping, configurable per file | Pose and Hand have separate index spaces; Hand index 0 is a wrist, not body/root ID 0 |
+| Position units used by processing | Metres, already in the exported internal coordinate system; reader does not rescale | Metres expected from the Unity capture; receiver does not rescale | `unit_scale=0.01` by default (cm → m); explicit override for other exporters | Metric **world** landmarks for geometry; normalized image XY only for association, visibility checks, and drawing |
+| Axes at ingestion | Already right-handed FLU: +X forward, +Y left, +Z up | Wire input is Unity left-handed: +X right, +Y up, +Z forward. Decode once with `p_internal=(z,-x,y)` | Right-handed Y-up → Z-up: `(x,-z,y)` by default; configurable `world_rotation` | Keep the native MediaPipe world vectors until constructing the body frame; do **not** apply the Unity permutation. The upright-camera fallback treats native +Y as camera-down |
+| Quaternion order | `rot_x, rot_y, rot_z, rot_w`; read as stored | Wire XYZW becomes internal `(-qz,qx,-qy,qw)` | Euler degrees in declared channel order; FK outputs world matrices and XYZW bone quaternions | No landmark quaternion is supplied; wrist orientation is constructed from hand points |
+| Position reference | Exported world/global bone positions, not parent-relative offsets | Common capture/world frame expected by the receiver, not parent-relative bone offsets | Parent-relative offsets/channels resolved to global poses by forward kinematics | Pose-world origin is the hip midpoint; Hand-world origin is the hand's geometric center. They are **not one shared translated world frame** |
+| Conversion on replay | Bone rows are already converted: no second Unity-to-FLU transform | A CSV recorded by XRT_devices stores decoded internal bones; replay follows the same rule as BONES-SEED CSV | Scale and world rotation applied once while evaluating the hierarchy | Hand points are made wrist-relative and attached to the matching Pose wrist before body/wrist transforms |
+| Timing | Timestamp values are seconds. Playback uses the stored sampling times; WARP explicitly samples at 30 Hz | `DeviceFrame.received_at` is host monotonic receive time, not headset capture time. The body packet carries no source timestamp | `Frame Time` seconds per sample; floor sampling, speed scaling, optional looping | Both Tasks run sequentially on the same RGB image. The device frame timestamp is host monotonic camera capture time; Tasks receive increasing millisecond timestamps |
+
+Google documents the separate metric origins in its
+[Pose result contract](https://developers.google.com/edge/mediapipe/solutions/vision/pose_landmarker/python#handle_and_display_results)
+and [Hand result contract](https://developers.google.com/edge/mediapipe/solutions/vision/hand_landmarker/python#handle_and_display_results).
+The body/hand alignment below is this package's implementation, not a claim that
+the two independently estimated metric spaces are perfectly calibrated.
 
 ---
 
