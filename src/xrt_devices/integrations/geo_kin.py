@@ -165,7 +165,7 @@ class OfflineCSVAdapter:
     """
 
     def __init__(self, csv_file, playback_speed: float = 1.0, loop: bool = True,
-                 body_frame="hips", **reader_kwargs):
+                 body_frame="upper_arms", **reader_kwargs):
         """
         Args:
             csv_file: Recorded OpenXR body-pose CSV.
@@ -175,8 +175,8 @@ class OfflineCSVAdapter:
         from xrt_devices.processing import bones_to_action
 
         from functools import partial
-        if body_frame not in ("hips", "upper_arms"):
-            raise ValueError("body_frame must be hips or upper_arms")
+        if body_frame != "upper_arms":
+            raise ValueError("upper-body frame must use body_frame='upper_arms'")
         self._bones_to_action = partial(bones_to_action, body_frame=body_frame)
         self.reader = CSVDataReader(str(csv_file), playback_speed, loop=loop, **reader_kwargs)
         self.loop = loop
@@ -215,6 +215,36 @@ class OfflineCSVAdapter:
         return f"CSV recording {self.reader.csv_file_path if hasattr(self.reader, 'csv_file_path') else ''}".strip()
 
 
+class OfflineBVHAdapter:
+    """LaFAN BVH playback with typed frames and the original BVH skeleton.
+
+    Reader options include unit_scale, world_rotation, joint_mapping,
+    body_frame and wrist_orientation_offsets. Fingers/grippers are unavailable.
+    """
+
+    def __init__(self, bvh_file, playback_speed=1.0, loop=True, **reader_kwargs):
+        from xrt_devices.recording.bvh_reader import BVHDataReader
+        self.reader = BVHDataReader(bvh_file, playback_speed, loop, **reader_kwargs)
+        self.loop = loop
+
+    @property
+    def duration(self):
+        return self.reader.get_duration()
+
+    def get_bones_at_time(self, elapsed_time):
+        return self.reader.get_bones_at_time(elapsed_time)
+
+    def get_frame_at_time(self, elapsed_time):
+        action, bones = self.reader.get_action_and_bones_at_time(elapsed_time)
+        return action_to_retarget_frame(action), bones
+
+    def frame_at_time(self, elapsed_time):
+        return self.get_frame_at_time(elapsed_time)[0]
+
+    def describe(self):
+        return f"BVH recording {self.reader.bvh_file}"
+
+
 class FrameStreamSource:
     """Playback of a vendored geo_kin_core frame stream (.npz).
 
@@ -245,14 +275,20 @@ class FrameStreamSource:
 
 
 def open_motion_source(frames=None, csv_file=None, playback_speed: float = 1.0,
-                       loop: bool = True):
-    """Open a motion source: a frame stream (preferred) or a recorded CSV.
+                       loop: bool = True, *, bvh_file=None, **reader_kwargs):
+    """Open exactly one frame stream, CSV recording, or BVH motion source.
 
-    Exactly one of `frames` / `csv_file` must be given. Frame streams need
-    nothing but numpy; CSVs use xrt-devices[recording].
+    Reader options are forwarded to CSV/BVH adapters. BVH needs only the base
+    numpy/scipy dependencies (plus geo_kin_core for this typed integration).
     """
-    if (frames is None) == (csv_file is None):
-        raise ValueError("open_motion_source: pass exactly one of frames=/csv_file=")
+    if sum(value is not None for value in (frames, csv_file, bvh_file)) != 1:
+        raise ValueError("open_motion_source: pass exactly one of frames=/csv_file=/bvh_file=")
     if frames is not None:
+        if reader_kwargs:
+            raise TypeError("reader options are only supported for CSV/BVH sources")
         return FrameStreamSource(frames, playback_speed=playback_speed, loop=loop)
-    return OfflineCSVAdapter(csv_file, playback_speed=playback_speed, loop=loop)
+    if bvh_file is not None:
+        return OfflineBVHAdapter(bvh_file, playback_speed=playback_speed, loop=loop,
+                                 **reader_kwargs)
+    return OfflineCSVAdapter(csv_file, playback_speed=playback_speed, loop=loop,
+                             **reader_kwargs)

@@ -69,10 +69,19 @@ pose IPC uses the shared latest-value mailbox. Quest-created feedback channels
 are required. The optional packaged ZED launcher is in `xrt_devices.video`.
 Application policies and hardware orchestration remain in proj_XRT.
 
-WARP selects `OfflineCSVAdapter(..., body_frame="upper_arms")` to preserve its
-archived input geometry. Live defaults stay `hips`. WARP's frozen RBY1 pin and
-paper settings are unchanged. Its full 420-frame input fixture is the parity gate.
-The body-frame option is human-coordinate processing, not analytic robot IK.
+Upper-body processing now follows the active computation in the original
+`xr_robot_teleop_client.py`: only left/right `ArmUpper` and `SpineMiddle` determine
+its frame. Live IOBT and CSV playback default to `upper_arms`, matching BVH and
+WARP's existing explicit selection. The incorrect `body_frame="hips"` upper-body
+variant is rejected. Hips remain anchors for the separate lower-body frame.
+This changes live/default CSV SEW, head and torso coordinates relative to the
+previous hip-oriented implementation; downstream calibrations made with that
+implementation should be checked. WARP's explicit upper-arm geometry is unchanged.
+Raw gripper signs also match the original client (`-1` above the 0.05 m
+thumb–index distance threshold, otherwise `+1`); distance-based typed consumers
+are unaffected by this sign correction. `R_torso` is restored as an alias of
+`R_lower_upper` in bone actions. All numeric action fields match the original
+client exactly across the 420-frame WARP sample sequence.
 
 These changes are local until the device implementation and consumer gitlinks
 are published. Live Quest/camera/ZED and hardware validation remain outstanding.

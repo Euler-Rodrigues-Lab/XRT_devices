@@ -111,7 +111,12 @@ def test_isolated_webrtc_pose_and_shutdown(factory, tmp_path):
                     events = []
                     for _ in range(200):
                         events.extend(device.poll_unity_state())
-                        if len(received) == 3 and events and device.network_rtt_ms() is not None:
+                        # Operator events and telemetry use separate IPC paths.
+                        # A toggle/RTT arrival does not imply the video snapshot
+                        # has crossed the process boundary yet (published at 10Hz).
+                        if (len(received) == 3 and events
+                                and device.network_rtt_ms() is not None
+                                and device.video_latency() is not None):
                             break
                         await asyncio.sleep(.02)
                     assert {name for name, _ in received} == {'unity_cmds','haptics','motor_stats'}

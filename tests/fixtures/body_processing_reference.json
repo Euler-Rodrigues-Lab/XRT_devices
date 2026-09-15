@@ -1,0 +1,6 @@
+{
+  "source": "SEW-Geometric-Teleop/projects/shared_devices/xr_robot_teleop_client.py",
+  "sha256": "010b17984fdb3f4845acc41c1236863c0558335c2ec983139cbdc55444fb6988",
+  "method": "_default_process_bones_to_action; original top-level numeric helpers executed directly using AST extraction to avoid hardware imports",
+  "inputs": "Stored random body poses (seed 17), with full IOBT IDs and SEED recording ID subset; expected arrays are original output, not XRT output"
+}
