@@ -54,18 +54,24 @@ class BVHDataReader:
     Defaults: LaFAN names, centimetres, right-handed Y-up -> Z-up world.
     ``joint_mapping`` replaces the name-to-FullBody-ID map. ``world_rotation``
     rotates the source world, leaving each joint's local axes unchanged.
-    Duration is N * Frame Time; non-looping playback ends at that boundary.
+    ``translation_channels="replace"`` makes a joint's position channels stand
+    in for its OFFSET instead of adding to it (BONES SOMA exports write the Hips
+    translation this way). Duration is N * Frame Time; non-looping playback
+    ends at that boundary.
     """
 
     def __init__(self, bvh_file, playback_speed=1., loop=True, *, unit_scale=.01,
                  world_rotation=None, joint_mapping=None, body_frame="upper_arms",
-                 wrist_orientation_offsets=None):
+                 wrist_orientation_offsets=None, translation_channels="add"):
         self.bvh_file = Path(bvh_file)
         for name, value in (("playback_speed", playback_speed), ("unit_scale", unit_scale)):
             if not np.isfinite(value) or value <= 0:
                 raise ValueError(f"{name} must be finite and positive")
         if body_frame != "upper_arms":
             raise ValueError("upper-body frame must use body_frame='upper_arms'")
+        if translation_channels not in ("add", "replace"):
+            raise ValueError("translation_channels must be 'add' or 'replace'")
+        self.translation_channels = translation_channels
         self.playback_speed, self.unit_scale = float(playback_speed), float(unit_scale)
         self.loop, self.body_frame = loop, body_frame
         self.world_rotation = _rotation(
@@ -80,9 +86,9 @@ class BVHDataReader:
                 raise ValueError("wrist_orientation_offsets keys must be left/right")
             self.wrist_offsets[side] = _rotation(matrix, f"{side} wrist offset")
         self._parse()
-        self._mapped = [(i, self.joint_mapping[j.name]) for i, j in enumerate(self.joints)
-                        if j.name in self.joint_mapping]
-        ids = [bone_id for _, bone_id in self._mapped]
+        self.mapped_joints = [(i, self.joint_mapping[j.name]) for i, j in enumerate(self.joints)
+                              if j.name in self.joint_mapping]
+        ids = [bone_id for _, bone_id in self.mapped_joints]
         if len(set(ids)) != len(ids):
             raise ValueError("multiple BVH joints map to the same bone ID; supply joint_mapping")
 
@@ -185,14 +191,20 @@ class BVHDataReader:
     def transforms_at_time(self, elapsed_time):
         """World joint matrices in metres; None when playback has finished."""
         index = self._frame_index(elapsed_time)
-        if index is None:
-            return None
+        return None if index is None else self.transforms_at_frame(index)
+
+    def transforms_at_frame(self, index):
+        """World joint matrices in metres for motion frame ``index``."""
+        if not 0 <= index < self.num_frames:
+            raise IndexError(f"frame index {index} outside 0..{self.num_frames - 1}")
         world = np.eye(4)
         world[:3, :3] = self.world_rotation
         transforms = []
         for joint in self.joints:
             local = np.eye(4)
-            local[:3, 3] = joint.offset * self.unit_scale
+            translated = any(channel.endswith("position") for channel in joint.channels)
+            if self.translation_channels == "add" or not translated:
+                local[:3, 3] = joint.offset * self.unit_scale
             # Compose in declared order, including interleaved translation channels.
             for k, channel in enumerate(joint.channels):
                 value = self.motion[index, joint.channel_start + k]
@@ -209,7 +221,7 @@ class BVHDataReader:
     def _bones(self, transforms):
         return [Bone(int(bid), transforms[i, :3, 3].copy(),
                      Rotation.from_matrix(transforms[i, :3, :3]).as_quat())
-                for i, bid in self._mapped]
+                for i, bid in self.mapped_joints]
 
     def get_bones_at_time(self, elapsed_time):
         transforms = self.transforms_at_time(elapsed_time)
@@ -220,7 +232,7 @@ class BVHDataReader:
         if transforms is None:
             return None, None
         bones = self._bones(transforms)
-        poses = {bid: transforms[i] for i, bid in self._mapped}
+        poses = {bid: transforms[i] for i, bid in self.mapped_joints}
         required = {10, 11, 19, 15, 16, 45, 3}
         missing = required - poses.keys()
         if missing:

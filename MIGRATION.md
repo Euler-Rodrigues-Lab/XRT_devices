@@ -91,3 +91,16 @@ proj_XRT `fcfa9d4b1385916b4d49383f1d7b41706bf68b21`, source blob
 `25f9c110a86113613ddc346978e31c77567a7eba` (MIT). The README now documents the
 implemented SEED/IOBT/MediaPipe conventions, including legacy finger-slot and tip
 adjustment behavior that remains unchanged for archived replay parity.
+
+## SOMA (BONES SEED) conversion (2026-09-17)
+
+`xrt_devices.recording.soma` replaces the lab-side `convert_seed_to_quest.py`
+preprocessing script and its vendored BONES `bvh.py` dependency. It reuses
+`BVHDataReader` (new `translation_channels="replace"` option, public
+`transforms_at_frame` and `mapped_joints`) and needs only numpy/scipy. The joint
+mapping, axis transform, Hips translation semantics, Root synthesis, 8/13
+duplication, row order and `%.4f` layout were measured from WARP's shipped
+`washing_dishes_R_004__A299.csv.gz` and from a public SOMA sample in BONES'
+Apache-2.0 `soma-retargeter` repository. No BONES source or SEED motion data is
+included; the byte-for-byte comparison against a shipped export is an opt-in
+test (`XRT_SOMA_GOLDEN_BVH`, `XRT_SOMA_GOLDEN_CSV`).

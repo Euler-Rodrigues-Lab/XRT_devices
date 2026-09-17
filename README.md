@@ -11,36 +11,40 @@ Python input devices for XR (WebRTC) headsets, MediaPipe camera tracking, and of
 
 - **Headset Teleoperation**: Real-time WebRTC receiver for Meta Quest / OpenXR body and hand tracking via [XRT-Client](https://github.com/yunho-c/XRT-Client).
 - **Camera Teleoperation**: MediaPipe Tasks integration for webcam-based upper-body and hand tracking without specialized VR hardware.
-- **Recording & Playback**: High-throughput background CSV recording and deterministic CSV/BVH playback.
+- **Recording & Playback**: High-throughput background CSV recording, deterministic CSV/BVH playback, and SOMA (BONES SEED) BVH conversion and replay.
 - **Process Isolation**: A shared-memory latest-snapshot mailbox keeps pose IPC bounded when a consumer or solver loop slows down.
 - **Keypoint Visualization**: For detailed keypoint definitions, hierarchy, and coordinate axes, see the interactive [Rerun replay visualization](https://xr-robot-teleop-website.pages.dev/).
 - **Geometric Frame Definitions**: For the mathematical formulation of Shoulder-Elbow-Wrist (SEW) frames, orientation alignment, and closed-form retargeting, see the [SEW-Mimic paper](#citation) and [sew-mimic.com](https://sew-mimic.com/).
 
 ---
 
-## Input conventions: SEED bones, IOBT, BVH, and MediaPipe
+## Input conventions: SEED bones, SOMA, IOBT, BVH, and MediaPipe
 
 These tables compare **source keypoint definitions** and **the keypoints consumed
 by processing**. Body-frame configuration is documented separately below. BVH playback uses the original repository's LaFAN mapping by
 default, with explicit overrides for other joint names, units, and world axes.
-“SEED” means the supported bone CSV/CSV.GZ export, including the
-recording used by WARP; it does not mean arbitrary raw BVH or a different SEED exporter.
+“SEED” means the bone CSV/CSV.GZ export produced from BONES-SEED motion files by
+[`xrt_devices.recording.soma`](src/xrt_devices/recording/soma.py), including the
+recording used by WARP; it does not mean arbitrary raw BVH or a different SEED
+exporter. “SOMA” is the BONES skeleton convention (joint names, hierarchy, rest
+offsets) carried inside those BVH files; BVH is only the container. SOMA reuses
+LaFAN joint names for different joints, so it has its own column below.
 “IOBT” (inside-out body tracking) means the Quest body/hand skeleton carried by XRT-Client's `body_pose`
 channel. A CSV is a storage format: an IOBT recording can also be a CSV, so the
 filename extension does not determine the anatomical convention.
 
 ### Source coordinates and time
 
-| Property | SEED bone CSV export | Live IOBT through XRT-Client | BVH (LaFAN defaults) | MediaPipe Pose + Hand Tasks |
-|---|---|---|---|---|
-| Input representation | Rows grouped by `time_elapsed` or `timestamp`; `bone_id` or `id`; position and quaternion columns | Little-endian `int32 count`, then `count` records of `<i7f>`: ID, XYZ position, XYZW quaternion | BVH hierarchy (`ROOT`, `JOINT`, `OFFSET`, `CHANNELS`) and sampled `MOTION` rows | 33 Pose landmarks and 21 landmarks per detected hand; image and metric world results are separate |
-| Skeleton identifiers | Uses this package's `FullBodyBoneId` namespace. The canonical WARP CSV has 71 distinct IDs, including root | Same `FullBodyBoneId` namespace, up to 84 defined pose IDs (0–83); packet count is explicit | Named hierarchy; explicit LaFAN-to-`FullBodyBoneId` mapping, configurable per file | Pose and Hand have separate index spaces; Hand index 0 is a wrist, not body/root ID 0 |
-| Position units used by processing | Metres, already in the exported internal coordinate system; reader does not rescale | Metres expected from the Unity capture; receiver does not rescale | `unit_scale=0.01` by default (cm → m); explicit override for other exporters | Metric **world** landmarks for geometry; normalized image XY only for association, visibility checks, and drawing |
-| Axes at ingestion | Already right-handed FLU: +X forward, +Y left, +Z up | Wire input is Unity left-handed: +X right, +Y up, +Z forward. Decode once with `p_internal=(z,-x,y)` | Right-handed Y-up → Z-up: `(x,-z,y)` by default; configurable `world_rotation` | Keep the native MediaPipe world vectors until constructing the body frame; do **not** apply the Unity permutation. The upright-camera fallback treats native +Y as camera-down |
-| Quaternion order | `rot_x, rot_y, rot_z, rot_w`; read as stored | Wire XYZW becomes internal `(-qz,qx,-qy,qw)` | Euler degrees in declared channel order; FK outputs world matrices and XYZW bone quaternions | No landmark quaternion is supplied; wrist orientation is constructed from hand points |
-| Position reference | Exported world/global bone positions, not parent-relative offsets | Common capture/world frame expected by the receiver, not parent-relative bone offsets | Parent-relative offsets/channels resolved to global poses by forward kinematics | Pose-world origin is the hip midpoint; Hand-world origin is the hand's geometric center. They are **not one shared translated world frame** |
-| Conversion on replay | Bone rows are already converted: no second Unity-to-FLU transform | A CSV recorded by XRT_devices stores decoded internal bones; replay follows the same rule as SEED CSV | Scale and world rotation applied once while evaluating the hierarchy | Hand points are made wrist-relative and attached to the matching Pose wrist before body/wrist transforms |
-| Timing | Timestamp values are seconds. Playback uses the stored sampling times; WARP explicitly samples at 30 Hz | `DeviceFrame.received_at` is host monotonic receive time, not headset capture time. The body packet carries no source timestamp | `Frame Time` seconds per sample; floor sampling, speed scaling, optional looping | Both Tasks run sequentially on the same RGB image. The device frame timestamp is host monotonic camera capture time; Tasks receive increasing millisecond timestamps |
+| Property | SEED bone CSV export | Live IOBT through XRT-Client | BVH (LaFAN defaults) | SOMA BVH (BONES SEED source) | MediaPipe Pose + Hand Tasks |
+|---|---|---|---|---|---|
+| Input representation | Rows grouped by `time_elapsed` or `timestamp`; `bone_id` or `id`; position and quaternion columns | Little-endian `int32 count`, then `count` records of `<i7f>`: ID, XYZ position, XYZW quaternion | BVH hierarchy (`ROOT`, `JOINT`, `OFFSET`, `CHANNELS`) and sampled `MOTION` rows | BVH hierarchy of 78 named joints: `ROOT Root` and `JOINT Hips` carry six channels, the other 76 carry `Zrotation Yrotation Xrotation`; no `End Site` blocks; `MOTION` rows at 120 fps | 33 Pose landmarks and 21 landmarks per detected hand; image and metric world results are separate |
+| Skeleton identifiers | Uses this package's `FullBodyBoneId` namespace. The canonical WARP CSV has 71 distinct IDs, including root | Same `FullBodyBoneId` namespace, up to 84 defined pose IDs (0–83); packet count is explicit | Named hierarchy; explicit LaFAN-to-`FullBodyBoneId` mapping, configurable per file | SOMA joint names. `SOMA_TO_FULL_BODY` maps 70 joints into `FullBodyBoneId`; `Root` **0** is synthesized; `Root`, `Neck1`, `HeadEnd`, `Jaw`, both eyes and both `ToeEnd` joints are dropped | Pose and Hand have separate index spaces; Hand index 0 is a wrist, not body/root ID 0 |
+| Position units used by processing | Metres, already in the exported internal coordinate system; reader does not rescale | Metres expected from the Unity capture; receiver does not rescale | `unit_scale=0.01` by default (cm → m); explicit override for other exporters | Centimetres; `unit_scale=0.01` | Metric **world** landmarks for geometry; normalized image XY only for association, visibility checks, and drawing |
+| Axes at ingestion | Already right-handed FLU: +X forward, +Y left, +Z up | Wire input is Unity left-handed: +X right, +Y up, +Z forward. Decode once with `p_internal=(z,-x,y)` | Right-handed Y-up → Z-up: `(x,-z,y)` by default; configurable `world_rotation` | Right-handed Y-up with +X anatomical left and +Z forward. `SOMA_TO_FLU` maps `(x,y,z) → (z,x,y)`; the LaFAN default `(x,-z,y)` would face a SOMA body along −Y | Keep the native MediaPipe world vectors until constructing the body frame; do **not** apply the Unity permutation. The upright-camera fallback treats native +Y as camera-down |
+| Quaternion order | `rot_x, rot_y, rot_z, rot_w`; read as stored | Wire XYZW becomes internal `(-qz,qx,-qy,qw)` | Euler degrees in declared channel order; FK outputs world matrices and XYZW bone quaternions | Euler degrees in `ZYX` channel order; the exported rotation is the global `SOMA_TO_FLU @ R` as XYZW, so joint-local axes stay SOMA's | No landmark quaternion is supplied; wrist orientation is constructed from hand points |
+| Position reference | Exported world/global bone positions, not parent-relative offsets | Common capture/world frame expected by the receiver, not parent-relative bone offsets | Parent-relative offsets/channels resolved to global poses by forward kinematics | Parent-relative offsets resolved by forward kinematics; the Hips position channels **replace** the Hips `OFFSET` (`translation_channels="replace"`), otherwise the body sits about 1 m too high | Pose-world origin is the hip midpoint; Hand-world origin is the hand's geometric center. They are **not one shared translated world frame** |
+| Conversion on replay | Bone rows are already converted: no second Unity-to-FLU transform | A CSV recorded by XRT_devices stores decoded internal bones; replay follows the same rule as SEED CSV | Scale and world rotation applied once while evaluating the hierarchy | Convert once with `python -m xrt_devices.recording.soma` into the SEED CSV column, or replay directly with `soma_bvh_reader`; both apply the same transform | Hand points are made wrist-relative and attached to the matching Pose wrist before body/wrist transforms |
+| Timing | Timestamp values are seconds. Playback uses the stored sampling times; WARP explicitly samples at 30 Hz | `DeviceFrame.received_at` is host monotonic receive time, not headset capture time. The body packet carries no source timestamp | `Frame Time` seconds per sample; floor sampling, speed scaling, optional looping | `Frame Time` 0.008333 s. CSV `time_elapsed` is frame index × the file's `Frame Time`, written with four decimals; `--stride` subsamples frames and keeps their original times | Both Tasks run sequentially on the same RGB image. The device frame timestamp is host monotonic camera capture time; Tasks receive increasing millisecond timestamps |
 
 Google documents the separate metric origins in its
 [Pose result contract](https://developers.google.com/edge/mediapipe/solutions/vision/pose_landmarker/python#handle_and_display_results)
@@ -58,34 +62,36 @@ maps `肩.L/R` to `{Left,Right}Shoulder`, `腕.L/R` to `{Left,Right}ArmUpper`,
 `ひじ.L/R` to `{Left,Right}ArmLower`, and `手首.L/R` to
 `{Left,Right}HandWrist`; those names should not be replaced by solver quantities.
 
-| Source keypoint | SEED / IOBT `FullBodyBoneId` | BVH: original LaFAN mapping | MediaPipe Pose |
-|---|---|---|---|
-| Root | `Root` **0** (`Start` is an enum alias) | No separate mapping; BVH root is `Hips` | No root landmark |
-| Pelvis | `Hips` **1** | `Hips` | No pelvis landmark; hip midpoint is derived |
-| Lower spine | `SpineLower` **2** | `Spine` | No corresponding landmark |
-| Middle spine | `SpineMiddle` **3** | `Spine1` | No corresponding landmark |
-| Upper spine | `SpineUpper` **4** | `Spine2` | No corresponding landmark |
-| Chest | `Chest` **5** | `Chest`, if present | No corresponding landmark |
-| Neck | `Neck` **6** | `Neck` | No corresponding landmark |
-| Head | `Head` **7** | `Head` | Face landmarks **0–10**; no single equivalent head joint |
-| Shoulder / clavicle anchor | `{Left,Right}Shoulder` **8 / 13** | `LeftShoulder / RightShoulder` | No separate clavicle anchor |
-| Scapula | `{Left,Right}Scapula` **9 / 14** | `LeftScapula / RightScapula`, if present | No corresponding landmark |
-| Upper-arm joint | `{Left,Right}ArmUpper` **10 / 15** | `LeftArm / RightArm` | `LEFT_SHOULDER / RIGHT_SHOULDER` **11 / 12** |
-| Lower-arm joint | `{Left,Right}ArmLower` **11 / 16** | `LeftForeArm / RightForeArm` | `LEFT_ELBOW / RIGHT_ELBOW` **13 / 14** |
-| Wrist twist | `{Left,Right}HandWristTwist` **12 / 17** | No mapping | No corresponding landmark |
-| Palm | `{Left,Right}HandPalm` **18 / 44** | No mapping | No palm-center landmark |
-| Wrist | `{Left,Right}HandWrist` **19 / 45** | `LeftHand / RightHand` | `LEFT_WRIST / RIGHT_WRIST` **15 / 16** |
-| Hip joint | `{Left,Right}UpperLeg` **70 / 77** | `LeftUpLeg / RightUpLeg` | `LEFT_HIP / RIGHT_HIP` **23 / 24** |
-| Knee joint | `{Left,Right}LowerLeg` **71 / 78** | `LeftLeg / RightLeg` | `LEFT_KNEE / RIGHT_KNEE` **25 / 26** |
-| Ankle twist | `{Left,Right}FootAnkleTwist` **72 / 79** | No mapping | No corresponding landmark |
-| Ankle joint | `{Left,Right}FootAnkle` **73 / 80** | `LeftFoot / RightFoot`; original mapping also accepts `LeftFootMod / RightFootMod` | `LEFT_ANKLE / RIGHT_ANKLE` **27 / 28** |
-| Subtalar | `{Left,Right}FootSubtalar` **74 / 81** | No mapping | No exact equivalent; `LEFT_HEEL / RIGHT_HEEL` **29 / 30** are heel points |
-| Transverse foot | `{Left,Right}FootTransverse` **75 / 82** | No mapping | No corresponding landmark |
-| Ball of foot | `{Left,Right}FootBall` **76 / 83** | `LeftToe / RightToe` | `LEFT_FOOT_INDEX / RIGHT_FOOT_INDEX` **31 / 32** are toe landmarks, not an exact ball-joint equivalent |
+| Source keypoint | SEED / IOBT `FullBodyBoneId` | BVH: original LaFAN mapping | SOMA (BONES SEED BVH) | MediaPipe Pose |
+|---|---|---|---|---|
+| Root | `Root` **0** (`Start` is an enum alias) | No separate mapping; BVH root is `Hips` | Synthesized: Hips x/y at the lowest SOMA joint height, identity rotation. SOMA's own `Root` joint is inert and dropped | No root landmark |
+| Pelvis | `Hips` **1** | `Hips` | `Hips` | No pelvis landmark; hip midpoint is derived |
+| Lower spine | `SpineLower` **2** | `Spine` | `Spine1` (LaFAN `Spine1` is the *middle* spine) | No corresponding landmark |
+| Middle spine | `SpineMiddle` **3** | `Spine1` | `Spine2` | No corresponding landmark |
+| Upper spine | `SpineUpper` **4** | `Spine2` | `Chest` (LaFAN `Chest` is ID 5) | No corresponding landmark |
+| Chest | `Chest` **5** | `Chest`, if present | Not emitted | No corresponding landmark |
+| Neck | `Neck` **6** | `Neck` | `Neck2`; `Neck1` is dropped | No corresponding landmark |
+| Head | `Head` **7** | `Head` | `Head`; `HeadEnd`, `Jaw` and both eyes are dropped | Face landmarks **0–10**; no single equivalent head joint |
+| Shoulder / clavicle anchor | `{Left,Right}Shoulder` **8 / 13** | `LeftShoulder / RightShoulder` | `LeftShoulder / RightShoulder` only with `shoulders="clavicle"`. Shipped SEED exports copy `LeftArm / RightArm` into 8 / 13 | No separate clavicle anchor |
+| Scapula | `{Left,Right}Scapula` **9 / 14** | `LeftScapula / RightScapula`, if present | No mapping | No corresponding landmark |
+| Upper-arm joint | `{Left,Right}ArmUpper` **10 / 15** | `LeftArm / RightArm` | `LeftArm / RightArm` | `LEFT_SHOULDER / RIGHT_SHOULDER` **11 / 12** |
+| Lower-arm joint | `{Left,Right}ArmLower` **11 / 16** | `LeftForeArm / RightForeArm` | `LeftForeArm / RightForeArm` | `LEFT_ELBOW / RIGHT_ELBOW` **13 / 14** |
+| Wrist twist | `{Left,Right}HandWristTwist` **12 / 17** | No mapping | No mapping | No corresponding landmark |
+| Palm | `{Left,Right}HandPalm` **18 / 44** | No mapping | No mapping | No palm-center landmark |
+| Wrist | `{Left,Right}HandWrist` **19 / 45** | `LeftHand / RightHand` | `LeftHand / RightHand` | `LEFT_WRIST / RIGHT_WRIST` **15 / 16** |
+| Hip joint | `{Left,Right}UpperLeg` **70 / 77** | `LeftUpLeg / RightUpLeg` | `LeftLeg / RightLeg` (SOMA `Leg` is the thigh; LaFAN `Leg` is the shin) | `LEFT_HIP / RIGHT_HIP` **23 / 24** |
+| Knee joint | `{Left,Right}LowerLeg` **71 / 78** | `LeftLeg / RightLeg` | `LeftShin / RightShin` | `LEFT_KNEE / RIGHT_KNEE` **25 / 26** |
+| Ankle twist | `{Left,Right}FootAnkleTwist` **72 / 79** | No mapping | No mapping | No corresponding landmark |
+| Ankle joint | `{Left,Right}FootAnkle` **73 / 80** | `LeftFoot / RightFoot`; original mapping also accepts `LeftFootMod / RightFootMod` | `LeftFoot / RightFoot` | `LEFT_ANKLE / RIGHT_ANKLE` **27 / 28** |
+| Subtalar | `{Left,Right}FootSubtalar` **74 / 81** | No mapping | No mapping | No exact equivalent; `LEFT_HEEL / RIGHT_HEEL` **29 / 30** are heel points |
+| Transverse foot | `{Left,Right}FootTransverse` **75 / 82** | No mapping | No mapping | No corresponding landmark |
+| Ball of foot | `{Left,Right}FootBall` **76 / 83** | `LeftToe / RightToe` | `LeftToeBase / RightToeBase`; `ToeEnd` is dropped but still bounds the synthesized Root height | `LEFT_FOOT_INDEX / RIGHT_FOOT_INDEX` **31 / 32** are toe landmarks, not an exact ball-joint equivalent |
 
 The SEED recording used by WARP omits IDs **5, 9, 12, 14, 17, 18, 44, 72, 74, 75,
-79, 81, 82**. The original VMD exporter can also synthesize foot points; availability
-must be checked per export. `FullBody_End(84)` is a sentinel, not a keypoint.
+79, 81, 82**. In SEED exports IDs **8 / 13** duplicate **10 / 15** unless the file was
+converted with `shoulders="clavicle"`; they are not clavicle positions. The original
+VMD exporter can also synthesize foot points; availability must be checked per
+export. `FullBody_End(84)` is a sentinel, not a keypoint.
 
 BVH joint names come from each file's hierarchy; the names above are the original
 repository's `BVH_TO_FULL_BODY` mapping, not universal BVH identifiers. Optional
@@ -167,15 +173,17 @@ index `Proximal` means `FullBody_LeftHandIndexProximal(25)` or
 `FullBody_RightHandIndexProximal(51)`. MediaPipe suffixes likewise retain the
 listed finger prefix.
 
-| Landmark chain | FullBody IDs, left / right (SEED and IOBT namespace) | BVH: original LaFAN mapping | MediaPipe Hand indices |
-|---|---|---|---|
-| Wrist | `HandWrist`: **19 / 45** | `LeftHand / RightHand` | `WRIST`: **0** |
-| Thumb | `ThumbMetacarpal, Proximal, Distal, Tip`: **20–23 / 46–49** | No finger-joint mapping | `THUMB_CMC, MCP, IP, TIP`: **1–4** |
-| Index | `IndexMetacarpal, Proximal, Intermediate, Distal, Tip`: **24–28 / 50–54** | No finger-joint mapping | `INDEX_FINGER_MCP, PIP, DIP, TIP`: **5–8** |
-| Middle | `MiddleMetacarpal, Proximal, Intermediate, Distal, Tip`: **29–33 / 55–59** | No finger-joint mapping | `MIDDLE_FINGER_MCP, PIP, DIP, TIP`: **9–12** |
-| Ring | `RingMetacarpal, Proximal, Intermediate, Distal, Tip`: **34–38 / 60–64** | No finger-joint mapping | `RING_FINGER_MCP, PIP, DIP, TIP`: **13–16** |
-| Little/pinky | `LittleMetacarpal, Proximal, Intermediate, Distal, Tip`: **39–43 / 65–69** | No finger-joint mapping | `PINKY_MCP, PIP, DIP, TIP`: **17–20** |
+| Landmark chain | FullBody IDs, left / right (SEED and IOBT namespace) | BVH: original LaFAN mapping | SOMA joints (`LeftHand…` / `RightHand…`) | MediaPipe Hand indices |
+|---|---|---|---|---|
+| Wrist | `HandWrist`: **19 / 45** | `LeftHand / RightHand` | `LeftHand / RightHand` | `WRIST`: **0** |
+| Thumb | `ThumbMetacarpal, Proximal, Distal, Tip`: **20–23 / 46–49** | No finger-joint mapping | `Thumb1, 2, 3, End` | `THUMB_CMC, MCP, IP, TIP`: **1–4** |
+| Index | `IndexMetacarpal, Proximal, Intermediate, Distal, Tip`: **24–28 / 50–54** | No finger-joint mapping | `Index1, 2, 3, 4, End` | `INDEX_FINGER_MCP, PIP, DIP, TIP`: **5–8** |
+| Middle | `MiddleMetacarpal, Proximal, Intermediate, Distal, Tip`: **29–33 / 55–59** | No finger-joint mapping | `Middle1, 2, 3, 4, End` | `MIDDLE_FINGER_MCP, PIP, DIP, TIP`: **9–12** |
+| Ring | `RingMetacarpal, Proximal, Intermediate, Distal, Tip`: **34–38 / 60–64** | No finger-joint mapping | `Ring1, 2, 3, 4, End` | `RING_FINGER_MCP, PIP, DIP, TIP`: **13–16** |
+| Little/pinky | `LittleMetacarpal, Proximal, Intermediate, Distal, Tip`: **39–43 / 65–69** | No finger-joint mapping | `Pinky1, 2, 3, 4, End` | `PINKY_MCP, PIP, DIP, TIP`: **17–20** |
 
+SOMA finger chains map one-to-one onto the OpenXR chains: joint `1` is the
+metacarpal and `End` is the tip, so no SEED finger slot is interpolated.
 The original VMD converter exposes `root`, `tip`, and `mediapipe` mappings.
 For example, `人指１.L` maps to `LeftHandIndexIntermediate(26)` in `root`
 mode but `LeftHandIndexProximal(25)` in `tip` mode. `親指１.L` maps to
@@ -263,6 +271,7 @@ Implementation references: [bone processing](src/xrt_devices/processing.py),
 [Unity conversion](src/xrt_devices/utils/coordinate.py),
 [CSV parsing](src/xrt_devices/recording/csv_reader.py),
 [BVH parsing and playback](src/xrt_devices/recording/bvh_reader.py),
+[SOMA conversion](src/xrt_devices/recording/soma.py),
 [MediaPipe processing](src/xrt_devices/_mediapipe_processing.py), and
 [typed adapter](src/xrt_devices/integrations/geo_kin.py).
 
@@ -400,6 +409,35 @@ the corresponding body frame; XR-specific head/foot alignment is not applied.
 The default LaFAN mapping supplies no fingers or gripper values. The skeleton
 preserves all named BVH joints and their actual parents; `End Site` offsets are
 parsed but are not emitted as tracked joints. Robot scaling and IK stay downstream.
+
+### SOMA BVH → SEED CSV
+
+BONES-SEED motions ship as SOMA BVH files. Convert one into the SEED bone CSV
+layout replayed by `CSVDataReader` and WARP, or replay it directly:
+
+```sh
+python -m xrt_devices.recording.soma motion.bvh motion.csv.gz
+python -m xrt_devices.recording.soma motion.bvh motion.csv --stride 4 --shoulders clavicle
+```
+
+```python
+from xrt_devices.recording.soma import convert_soma_bvh, soma_bvh_reader
+
+convert_soma_bvh("motion.bvh", "motion.csv.gz")     # 71 bones per frame, %.4f, 120 fps
+reader = soma_bvh_reader("motion.bvh", loop=False)   # BVHDataReader with SOMA options
+action, bones = reader.get_action_and_bones_at_time(0.0)
+```
+
+The converter applies `unit_scale=0.01`, `world_rotation=SOMA_TO_FLU`,
+`translation_channels="replace"` and the 70-joint `SOMA_TO_FULL_BODY` mapping,
+synthesizes `Root` **0** at the Hips x/y and the lowest SOMA joint height, and by
+default copies the upper arms into IDs **8 / 13** exactly like the shipped SEED
+exports (`--shoulders clavicle` writes SOMA's clavicles instead). Rows keep the
+shipped order and `%.4f` formatting so a regenerated file matches an existing
+export byte for byte; `.gz` output is selected by suffix. `test_golden_seed_export`
+compares against a shipped export when `XRT_SOMA_GOLDEN_BVH` and
+`XRT_SOMA_GOLDEN_CSV` are set. SEED motion data is licensed separately by BONES
+and is not included in this repository.
 
 ### Live Recording
 
