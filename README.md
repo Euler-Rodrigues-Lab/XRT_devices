@@ -516,3 +516,30 @@ headset-reported components. UI events are ordered separately from latest teleme
 `from xrt_devices.video import zed_stream_script` locates the optional Bash
 launcher in installed wheels. Run it with Bash on a host providing GStreamer,
 ZED SDK, NVIDIA NVENC and MediaMTX. Importing this resource starts no camera or GPU.
+
+### Simulator RGB streaming with GStreamer
+
+`xrt_devices.video.gstreamer.GStreamerPublisher` publishes RGB `uint8` frames
+without starting a camera. For stereo, concatenate left/right images into one
+side-by-side frame before submission:
+
+```python
+from xrt_devices.video.gstreamer import GStreamerPublisher
+with GStreamerPublisher(1280, 480, fps=30,
+                        destination="udp://127.0.0.1:9000") as video:
+    video.send_frame(side_by_side_rgb)
+```
+
+Install GStreamer tools plus base/good/bad/ugly plugins (`rawvideoparse`,
+`videoconvert`, `x264enc`, `h264parse`, `mpegtsmux`, `udpsink`). The publisher
+checks these elements before starting. MediaMTX can receive this via a path with
+`source: udp+mpegts://127.0.0.1:9000` and expose it through WebRTC/WHEP.
+`rtsp://` destinations additionally require `rtspclientsink` (Ubuntu package
+`gstreamer1.0-rtsp`). `file:///absolute/path.ts` supports local encoder checks.
+
+A bounded queue drops old complete RGB frames under backpressure; a partial pipe
+write is completed or treated as an error, never spliced with another frame.
+Frames must have the declared dimensions and rate. Encoding uses no B-frames,
+zerolatency tuning, and a half-second keyframe interval. This bounds the
+publisher queue; it is not an end-to-end latency guarantee. `submitted`,
+`written`, and `dropped` expose local publisher counters.
