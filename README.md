@@ -127,7 +127,7 @@ and is not interpreted as a measured lower-to-upper torso rotation.
 
 Live OpenXR (Quest IOBT), BONES-SEED CSV replay, and BVH all use the upper-arm convention.
 `body_frame="upper_arms"` remains accepted for existing explicit callers such as
-[WARP's converter](../WARP_retargeting/src/warp_retargeting/transcode_csv.py), but
+[WARP's converter](https://github.com/Euler-Rodrigues-Lab/WARP_retargeting/blob/main/src/warp_retargeting/transcode_csv.py), but
 is now also the default. The previous `body_frame="hips"` upper-body variant is
 rejected: hips define the separate lower-body frame, not the upper-body frame.
 The hand-slot selection described below is a separate bone-presence heuristic.
@@ -529,6 +529,14 @@ with GStreamerPublisher(1280, 480, fps=30,
                         destination="udp://127.0.0.1:9000") as video:
     video.send_frame(side_by_side_rgb)
 ```
+
+For a binocular client that opens separate left/right connections, pass
+`eye_destinations=("udp://127.0.0.1:9002", "udp://127.0.0.1:9004")`.
+The publisher tees each submitted side-by-side frame, crops each eye, and
+encodes the combined and separate-eye streams with common source timestamps.
+This additionally requires the `tee`, `queue`, and `videocrop` elements and
+an input width divisible by four (so each eye has even width). Configure corresponding MediaMTX paths for all three
+destinations; endpoint names belong to the consumer application.
 
 Install GStreamer tools plus base/good/bad/ugly plugins (`rawvideoparse`,
 `videoconvert`, `x264enc`, `h264parse`, `mpegtsmux`, `udpsink`). The publisher

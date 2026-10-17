@@ -15,45 +15,67 @@ import time
 import numpy as np
 
 
-def pipeline(width, height, fps, destination, bitrate=12000):
+def _sink(destination):
+    parsed=urlparse(destination)
+    if parsed.scheme=='udp' and parsed.hostname and parsed.port:
+        return ['!','mpegtsmux','alignment=7','!','udpsink',f'host={parsed.hostname}',f'port={parsed.port}','sync=false','async=false']
+    if parsed.scheme=='rtsp' and parsed.hostname:
+        return ['!','rtspclientsink',f'location={destination}','protocols=tcp','latency=0']
+    if parsed.scheme=='file':
+        return ['!','mpegtsmux','!','filesink',f'location={parsed.path}']
+    raise ValueError('destination must be udp://host:port, rtsp://host/path or file:///path.ts')
+
+
+def _branch(fps, destination, bitrate, crop=None):
+    args=['queue','max-size-buffers=1','max-size-bytes=0','max-size-time=0','leaky=downstream']
+    if crop:args+=['!','videocrop',crop]
+    args+=['!','videoconvert','!','video/x-raw,format=I420',
+           '!','x264enc','tune=zerolatency','speed-preset=ultrafast',f'bitrate={bitrate}',
+           f'key-int-max={max(1,fps//2)}','bframes=0','!','h264parse','config-interval=-1']
+    return args+_sink(destination)
+
+
+def pipeline(width, height, fps, destination, bitrate=12000, eye_destinations=None):
     if min(width,height,fps,bitrate)<=0 or width%2 or height%2:
         raise ValueError('positive fps/bitrate and even positive dimensions required')
     args=['gst-launch-1.0','-q','fdsrc','fd=0',f'blocksize={width*height*3}',
-          '!', 'rawvideoparse','format=rgb',f'width={width}',f'height={height}',f'framerate={fps}/1',
-          '!', 'queue','max-size-buffers=1','max-size-bytes=0','max-size-time=0','leaky=downstream',
-          '!', 'videoconvert','!', 'video/x-raw,format=I420',
-          '!', 'x264enc','tune=zerolatency','speed-preset=ultrafast',f'bitrate={bitrate}',
-          f'key-int-max={max(1,fps//2)}','bframes=0','!', 'h264parse','config-interval=-1']
-    parsed=urlparse(destination)
-    if parsed.scheme=='udp' and parsed.hostname and parsed.port:
-        args+=['!','mpegtsmux','alignment=7','!','udpsink',f'host={parsed.hostname}',f'port={parsed.port}','sync=false','async=false']
-    elif parsed.scheme=='rtsp' and parsed.hostname:
-        args+=['!','rtspclientsink',f'location={destination}','protocols=tcp','latency=0']
-    elif parsed.scheme=='file':
-        args+=['!','mpegtsmux','!','filesink',f'location={parsed.path}']
-    else:
-        raise ValueError('destination must be udp://host:port, rtsp://host/path or file:///path.ts')
+          '!','rawvideoparse','format=rgb',f'width={width}',f'height={height}',f'framerate={fps}/1']
+    if eye_destinations is None:
+        return args+['!']+_branch(fps,destination,bitrate)
+    if width%4 or len(eye_destinations)!=2:
+        raise ValueError('split stereo requires width divisible by 4 and two eye destinations')
+    if len({destination,*eye_destinations})!=3:
+        raise ValueError('SBS, left, and right destinations must be distinct')
+    # Split the same raw frame and timestamps before encoding. Do not send the
+    # full SBS image to each eye: crop opposite halves for true binocular video.
+    args+=['!','tee','name=stereo','stereo.','!']+_branch(fps,destination,bitrate)
+    for target,crop in zip(eye_destinations,[f'right={width//2}',f'left={width//2}']):
+        args+=['stereo.','!']+_branch(fps,target,max(1,bitrate//2),crop)
     return args
 
 
-def check_plugins(destination='udp://127.0.0.1:9000'):
+def check_plugins(destination='udp://127.0.0.1:9000', split_stereo=False):
     if not shutil.which('gst-launch-1.0') or not shutil.which('gst-inspect-1.0'):
         raise RuntimeError('Install GStreamer tools and base/good/bad/ugly plugins')
     plugins=['fdsrc','rawvideoparse','queue','videoconvert','x264enc','h264parse']
+    if split_stereo:plugins+=['tee','videocrop']
     plugins+=['rtspclientsink'] if destination.startswith('rtsp:') else ['mpegtsmux','udpsink' if destination.startswith('udp:') else 'filesink']
     missing=[p for p in plugins if subprocess.run(['gst-inspect-1.0',p],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL).returncode]
     if missing: raise RuntimeError('Missing GStreamer elements: '+', '.join(missing))
 
 
 class GStreamerPublisher:
-    def __init__(self,width,height,fps=30,destination='udp://127.0.0.1:9000',bitrate=12000,log_path=None):
+    def __init__(self,width,height,fps=30,destination='udp://127.0.0.1:9000',bitrate=12000,log_path=None,*,eye_destinations=None):
         self.width,self.height=width,height
-        self.args=pipeline(width,height,fps,destination,bitrate)
+        self.eye_destinations=tuple(eye_destinations) if eye_destinations is not None else None
+        self.args=pipeline(width,height,fps,destination,bitrate,self.eye_destinations)
         self.destination,self.log_path=destination,log_path
         self.frames=queue.Queue(maxsize=1);self.stop=threading.Event();self.error=None
         self.submitted=self.written=self.dropped=0
     def __enter__(self):
-        check_plugins(self.destination)
+        check_plugins(self.destination, self.eye_destinations is not None)
+        for destination in self.eye_destinations or ():
+            check_plugins(destination)
         self.log=open(self.log_path,'wb') if self.log_path else None
         try:
             self.process=subprocess.Popen(self.args,stdin=subprocess.PIPE,stdout=subprocess.DEVNULL,stderr=self.log)
