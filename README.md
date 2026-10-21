@@ -516,3 +516,17 @@ headset-reported components. UI events are ordered separately from latest teleme
 `from xrt_devices.video import zed_stream_script` locates the optional Bash
 launcher in installed wheels. Run it with Bash on a host providing GStreamer,
 ZED SDK, NVIDIA NVENC and MediaMTX. Importing this resource starts no camera or GPU.
+
+## Head and hand TCP input
+
+`xrt_devices.integrations.tcp.bones_to_tcp_action` reads only head and hand
+bones, returning `head_pose`, `left_eef`/`right_eef` world wrist poses and
+`left_fingers_wrist`/`right_fingers_wrist` full wrist-local landmarks.
+Pass it as `process_bones_to_action_fn` to `XRDevice` or `XRDeviceAdapter`;
+consume raw actions rather than the legacy SEW frame adapter.
+
+`MediaPipeTeleopDevice(tcp_only=True)` emits the same payload, estimating the
+head orientation from nose/ear points and matching hands to tracked wrists.
+It does not use shoulders, elbows or hips to build this payload. Missing head
+or hand observations result in an absent/disengaged action; the normal snapshot
+staleness checks still apply. TCP consumers perform their own robot calibration.

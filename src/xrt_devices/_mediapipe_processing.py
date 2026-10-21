@@ -257,6 +257,14 @@ class MediaPipeTeleopDevice:
                 pose_results = self.pose.process(rgb_frame)
                 hand_results = self.hands.process(rgb_frame)
                 
+                if getattr(self, 'tcp_only', False):
+                    from .integrations.tcp import mediapipe_to_tcp_action
+                    with self.controller_state_lock:
+                        self._tcp_action = mediapipe_to_tcp_action(pose_results, hand_results, self.R_std_cam)
+                        self._last_received = captured_at
+                        self._sequence += 1
+                    continue
+
                 # Process landmarks
                 with self.controller_state_lock:
                     self._process_pose_landmarks(pose_results, frame)
