@@ -1,3 +1,8 @@
+For customer installations, use `uv pip install "xrt-devices==0.1.1"` after
+publication to PyPI. Optional dependencies remain explicit: `xrt-devices[xr,recording]==0.1.1`
+or `xrt-devices[mediapipe]==0.1.1`. Editable installs below are for development.
+See [RELEASING.md](RELEASING.md).
+
 # XRT Devices
 
 Python input devices for XR (WebRTC) headsets, MediaPipe camera tracking, and offline BVH motion. This package provides lightweight, robot-agnostic interfaces for real-time human pose streaming, bone processing, and CSV recording/playback.
