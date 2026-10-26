@@ -12,6 +12,6 @@ jobs:
         with:
           python-version: '${{ matrix.python }}'
       - run: uv sync --extra xr --extra recording --extra test
-      - run: uv pip install 'geo-kin-core==0.1.1'
+      - run: uv pip install 'eurola-geo-kin-core==0.1.1'
       - run: uv run --no-sync pytest -q
       - run: uv run python -m build

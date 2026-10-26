@@ -3,7 +3,7 @@ requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "xrt-devices"
+name = "eurola-xrt-devices"
 version = "0.1.1"
 description = "Public Python XRT and MediaPipe teleoperation input devices"
 readme = "README.md"
