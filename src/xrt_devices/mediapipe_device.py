@@ -14,9 +14,12 @@ class MediaPipeTeleopDevice(_Processing):
     """
 
     def __init__(self, *, pose_model=None, hand_model=None, camera_id=0, display=False,
-                 debug=False, mirror_actions=False, stale_after=0.5):
+                 debug=False, mirror_actions=False, stale_after=0.5, eef_only=False, tcp_only=False):
         if stale_after <= 0:
             raise ValueError("stale_after must be positive")
+        self.eef_only = eef_only
+        self.tcp_only = tcp_only
+        self._tcp_action = None
         self.stale_after = stale_after
         self._closed = False
         pose_model = resolve_model("pose", pose_model)
@@ -35,6 +38,8 @@ class MediaPipeTeleopDevice(_Processing):
         with self.controller_state_lock:
             if self._closed or time.monotonic() - self._last_received > self.stale_after:
                 return None
+            if self.tcp_only:
+                return deepcopy(self._tcp_action)
             return deepcopy(super().get_controller_state())
 
     def close(self):

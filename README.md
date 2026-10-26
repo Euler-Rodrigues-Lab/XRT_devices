@@ -7,18 +7,19 @@ See [RELEASING.md](RELEASING.md).
 
 Python input devices for XR (WebRTC) headsets, MediaPipe camera tracking, and offline BVH motion. This package provides lightweight, robot-agnostic interfaces for real-time human pose streaming, bone processing, and CSV recording/playback.
 
-- **Prior Work & Teleop System**: [XR-Robot-Teleop Project Page](https://xr-robot-teleop-website.pages.dev/)
+- **XRT Project Website**: [xrt-teleop.github.io](https://xrt-teleop.github.io) (XRT system, dual-humanoid study, pose viewer)
+- **XRT Repositories**: [XRT-Client](https://github.com/Euler-Rodrigues-Lab/XRT-Client) (Quest 3 Unity app, [APK](https://github.com/Euler-Rodrigues-Lab/XRT-Client/releases/latest)) | [proj_XRT](https://github.com/Euler-Rodrigues-Lab/proj_XRT) (XRT application for Unitree G1 + Inspire hands) | [g1_teleop](https://github.com/Euler-Rodrigues-Lab/g1_teleop) | [geo_kin_core](https://github.com/Euler-Rodrigues-Lab/geo_kin_core)
 - **SEW-Mimic Theory & Retargeting**: [SEW-Mimic Website](https://sew-mimic.com/) | [arXiv:2602.01632](https://arxiv.org/abs/2602.01632)
 
 ---
 
 ## Overview
 
-- **Headset Teleoperation**: Real-time WebRTC receiver for Meta Quest / OpenXR body and hand tracking via [XRT-Client](https://github.com/yunho-c/XRT-Client).
+- **Headset Teleoperation**: Real-time WebRTC receiver for Meta Quest / OpenXR body and hand tracking via [XRT-Client](https://github.com/Euler-Rodrigues-Lab/XRT-Client).
 - **Camera Teleoperation**: MediaPipe Tasks integration for webcam-based upper-body and hand tracking without specialized VR hardware.
 - **Recording & Playback**: High-throughput background CSV recording and deterministic CSV/BVH playback.
 - **Process Isolation**: A shared-memory latest-snapshot mailbox keeps pose IPC bounded when a consumer or solver loop slows down.
-- **Keypoint Visualization**: For detailed keypoint definitions, hierarchy, and coordinate axes, see the interactive [Rerun replay visualization](https://xr-robot-teleop-website.pages.dev/).
+- **Keypoint Visualization**: For detailed keypoint definitions, hierarchy, and coordinate axes, see the interactive [Rerun replay visualization](https://xrt-teleop.github.io/viewer/).
 - **Geometric Frame Definitions**: For the mathematical formulation of Shoulder-Elbow-Wrist (SEW) frames, orientation alignment, and closed-form retargeting, see the [SEW-Mimic paper](#citation) and [sew-mimic.com](https://sew-mimic.com/).
 
 ---
@@ -322,7 +323,7 @@ with XRDevice(port=8080) as device:
         time.sleep(0.02)
 ```
 
-Connect [XRT-Client](https://github.com/yunho-c/XRT-Client) to this host, port `8080`.
+Connect [XRT-Client](https://github.com/Euler-Rodrigues-Lab/XRT-Client) to this host, port `8080`.
 Signaling is handled via `POST /offer`. One headset per instance is supported. Client-created WebRTC data channels include: `body_pose`, `apriltag_pose`, `unity_state`, `haptics`, `motor_stats`, and `unity_cmds`. Feedback methods include `send_haptics`, `send_motor_stats`, and `send_unity_command`; poll UI events with `poll_unity_state`.
 
 Construction does not automatically open the server. Use the context manager or call `start()` / `cleanup()`.
@@ -468,8 +469,9 @@ If you use `xrt_devices` or the SEW teleoperation framework in your research, pl
 ```
 
 - **Project Web**: [https://sew-mimic.com/](https://sew-mimic.com/)
-- **Prior Teleop System**: [https://xr-robot-teleop-website.pages.dev/](https://xr-robot-teleop-website.pages.dev/)
-- **Upstream Client**: [XR-Robot-Teleop-Client](https://github.com/yunho-c/XR-Robot-Teleop-Client)
+- **XRT Project Website**: [https://xrt-teleop.github.io](https://xrt-teleop.github.io)
+- **Headset Client**: [XRT-Client](https://github.com/Euler-Rodrigues-Lab/XRT-Client)
+- **XRT Application (G1 + Inspire)**: [proj_XRT](https://github.com/Euler-Rodrigues-Lab/proj_XRT)
 
 ---
 
@@ -519,3 +521,17 @@ headset-reported components. UI events are ordered separately from latest teleme
 `from xrt_devices.video import zed_stream_script` locates the optional Bash
 launcher in installed wheels. Run it with Bash on a host providing GStreamer,
 ZED SDK, NVIDIA NVENC and MediaMTX. Importing this resource starts no camera or GPU.
+
+## Head and hand TCP input
+
+`xrt_devices.integrations.tcp.bones_to_tcp_action` reads only head and hand
+bones, returning `head_pose`, `left_eef`/`right_eef` world wrist poses and
+`left_fingers_wrist`/`right_fingers_wrist` full wrist-local landmarks.
+Pass it as `process_bones_to_action_fn` to `XRDevice` or `XRDeviceAdapter`;
+consume raw actions rather than the legacy SEW frame adapter.
+
+`MediaPipeTeleopDevice(tcp_only=True)` emits the same payload, estimating the
+head orientation from nose/ear points and matching hands to tracked wrists.
+It does not use shoulders, elbows or hips to build this payload. Missing head
+or hand observations result in an absent/disengaged action; the normal snapshot
+staleness checks still apply. TCP consumers perform their own robot calibration.

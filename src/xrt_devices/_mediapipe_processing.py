@@ -257,6 +257,14 @@ class MediaPipeTeleopDevice:
                 pose_results = self.pose.process(rgb_frame)
                 hand_results = self.hands.process(rgb_frame)
                 
+                if getattr(self, 'tcp_only', False):
+                    from .integrations.tcp import mediapipe_to_tcp_action
+                    with self.controller_state_lock:
+                        self._tcp_action = mediapipe_to_tcp_action(pose_results, hand_results, self.R_std_cam)
+                        self._last_received = captured_at
+                        self._sequence += 1
+                    continue
+
                 # Process landmarks
                 with self.controller_state_lock:
                     self._process_pose_landmarks(pose_results, frame)
@@ -332,6 +340,7 @@ class MediaPipeTeleopDevice:
                     # Store body frame transformation
                     if 'body_frame' in body_centric_coords:
                         self.human_sew_poses['R_world_body'] = body_centric_coords['body_frame']['R_world_body']
+                        self.human_sew_poses['p_world_body'] = self.R_std_cam @ body_centric_coords['body_frame']['origin']
                     
                     # Check engagement based on pose visibility
                     self._check_engagement_from_pose(pose_results)
@@ -369,6 +378,12 @@ class MediaPipeTeleopDevice:
             
         landmarks = pose_results.pose_landmarks.landmark
         
+        if getattr(self, 'eef_only', False):
+            visible = lambda name: landmarks[getattr(self.mp_pose.PoseLandmark, name)].visibility > 0.75
+            self._eef_visibility = {side: visible(side.upper() + '_WRIST') for side in ('left','right')}
+            self.engaged = visible('LEFT_SHOULDER') and visible('RIGHT_SHOULDER') and any(self._eef_visibility.values())
+            return
+
         # Check visibility of key landmarks
         left_shoulder = landmarks[self.mp_pose.PoseLandmark.LEFT_SHOULDER]
         left_elbow = landmarks[self.mp_pose.PoseLandmark.LEFT_ELBOW]
@@ -1084,6 +1099,19 @@ class MediaPipeTeleopDevice:
                     sew = self.human_sew_poses[arm_side]
                     hand_data = self.human_hand_poses[arm_side]
                     
+                    # EEF consumers only require W and tracked hand rotation;
+                    # preserve this payload even if the elbow is not available.
+                    body_r = self.human_sew_poses.get('R_world_body')
+                    body_p = self.human_sew_poses.get('p_world_body')
+                    hand_r = self._tracked_wrist_rotation(arm_side, hand_data)
+                    if body_r is not None and body_p is not None and sew['W'] is not None and hand_r is not None and getattr(self, '_eef_visibility', {}).get(arm_side, True):
+                        controller_state['R_world_upper_body'] = body_r
+                        controller_state['p_world_upper_body'] = body_p
+                        controller_state[f'{arm_side}_hand_pose'] = {
+                            'position': body_p + body_r @ sew['W'],
+                            'rotation': body_r @ hand_r,
+                        }
+
                     # Check if all SEW poses are available
                     if all(pose is not None for pose in sew.values()):
                         # Start with basic SEW coordinates
