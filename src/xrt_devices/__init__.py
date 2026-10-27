@@ -2,7 +2,7 @@
 
 from .types import DeviceFrame
 
-__version__ = "0.1.1"
+__version__ = "0.1.2"
 __all__ = ["DeviceFrame", "XRDevice", "XRRTCBodyPoseDevice", "MediaPipeTeleopDevice"]
 
 

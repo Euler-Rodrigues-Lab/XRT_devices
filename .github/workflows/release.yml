@@ -31,7 +31,7 @@ jobs:
           "$GITHUB_WORKSPACE/.release-venv/bin/python" "$GITHUB_WORKSPACE/scripts/check_release.py"
       - name: Test installed package
         run: |
-          uv pip install --python .release-venv/bin/python 'eurola-xrt-devices[xr,recording,test]==0.1.1' 'eurola-geo-kin-core==0.1.1'
+          uv pip install --python .release-venv/bin/python 'eurola-xrt-devices[xr,recording,test]==0.1.2' 'eurola-geo-kin-core==0.1.2'
           cd /tmp
           "$GITHUB_WORKSPACE/.release-venv/bin/python" -m pytest "$GITHUB_WORKSPACE/tests" -q
       - uses: actions/upload-artifact@v4

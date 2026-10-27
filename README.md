@@ -1,6 +1,6 @@
-For customer installations, use `uv pip install "eurola-xrt-devices==0.1.1"` after
-publication to PyPI. Optional dependencies remain explicit: `eurola-xrt-devices[xr,recording]==0.1.1`
-or `eurola-xrt-devices[mediapipe]==0.1.1`. Editable installs below are for development.
+For customer installations, use `uv pip install "eurola-xrt-devices==0.1.2"` after
+publication to PyPI. Optional dependencies remain explicit: `eurola-xrt-devices[xr,recording]==0.1.2`
+or `eurola-xrt-devices[mediapipe]==0.1.2`. Editable installs below are for development.
 See [RELEASING.md](RELEASING.md).
 
 # XRT Devices
